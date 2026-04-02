@@ -28,7 +28,7 @@ export interface MergeAction {
 }
 
 async function fetchByIds<T>(
-  table: string,
+  table: "variants" | "channel_listings" | "inventory",
   column: string,
   ids: string[],
   select: string = "*",
@@ -43,7 +43,7 @@ async function fetchByIds<T>(
           .select(select)
           .in(column, chunk)
           .range(from, to);
-        return { data, error };
+        return { data: data as T[] | null, error };
       }, PAGE_SIZE),
     ),
   );
