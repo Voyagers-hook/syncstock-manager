@@ -38,12 +38,12 @@ async function fetchByIds<T>(
   const results = await Promise.all(
     chunks.map((chunk) =>
       fetchAllPages<T>(async (from, to) => {
-        const { data, error } = await supabase
+        const resp = await supabase
           .from(table)
           .select(select)
           .in(column, chunk)
           .range(from, to);
-        return { data: data as T[] | null, error };
+        return { data: resp.data as unknown as T[] | null, error: resp.error };
       }, PAGE_SIZE),
     ),
   );
