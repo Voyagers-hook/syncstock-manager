@@ -121,59 +121,96 @@ async function fetchAllSquarespaceProducts(apiKey: string): Promise<SqProduct[]>
 
 async function upsertProducts(supabase: any, newProducts: SqProduct[], totalFetched: number) {
   let productsCreated = 0;
+  let productsReused = 0;
   let variantsCreated = 0;
+  let variantsReused = 0;
   let listingsCreated = 0;
 
   for (const sqProduct of newProducts) {
     const imageUrl = sqProduct.images?.[0]?.url || null;
-    const { data: product, error: prodErr } = await supabase
-      .from("products")
-      .insert({
-        name: sqProduct.name,
-        description: sqProduct.description || null,
-        image_url: imageUrl,
-        status: "active",
-        active: true,
-      })
-      .select("id")
-      .single();
 
-    if (prodErr || !product) {
-      console.error(`Failed to create product for ${sqProduct.name}:`, prodErr);
-      continue;
+    // Try to find existing product by name first
+    const { data: existingProduct } = await supabase
+      .from("products")
+      .select("id")
+      .eq("name", sqProduct.name)
+      .limit(1)
+      .maybeSingle();
+
+    let productId: string;
+
+    if (existingProduct) {
+      productId = existingProduct.id;
+      productsReused++;
+    } else {
+      const { data: product, error: prodErr } = await supabase
+        .from("products")
+        .insert({
+          name: sqProduct.name,
+          description: sqProduct.description || null,
+          image_url: imageUrl,
+          status: "active",
+          active: true,
+        })
+        .select("id")
+        .single();
+
+      if (prodErr || !product) {
+        console.error(`Failed to create product for ${sqProduct.name}:`, prodErr);
+        continue;
+      }
+      productId = product.id;
+      productsCreated++;
     }
-    productsCreated++;
 
     for (const sqVariant of sqProduct.variants) {
       const price = parseFloat(sqVariant.pricing?.basePrice?.value || "0");
       const attrs = sqVariant.attributes || {};
       const optionValues = Object.values(attrs);
+      const variantSku = sqVariant.sku || sqVariant.id;
 
-      const { data: variant } = await supabase
+      // Try to find existing variant by SKU and product
+      const { data: existingVariant } = await supabase
         .from("variants")
-        .insert({
-          product_id: product.id,
-          internal_sku: sqVariant.sku || sqVariant.id,
-          option1: optionValues[0] || null,
-          option2: optionValues[1] || null,
-        })
         .select("id")
-        .single();
+        .eq("product_id", productId)
+        .eq("internal_sku", variantSku)
+        .limit(1)
+        .maybeSingle();
 
-      if (!variant) continue;
-      variantsCreated++;
+      let variantId: string;
 
-      const stock = sqVariant.stock?.unlimited ? 999 : (sqVariant.stock?.quantity ?? 0);
-      await supabase.from("inventory").insert({
-        variant_id: variant.id,
-        product_id: product.id,
-        total_stock: stock,
-      });
+      if (existingVariant) {
+        variantId = existingVariant.id;
+        variantsReused++;
+      } else {
+        const { data: variant } = await supabase
+          .from("variants")
+          .insert({
+            product_id: productId,
+            internal_sku: variantSku,
+            option1: optionValues[0] || null,
+            option2: optionValues[1] || null,
+          })
+          .select("id")
+          .single();
+
+        if (!variant) continue;
+        variantId = variant.id;
+        variantsCreated++;
+
+        const stock = sqVariant.stock?.unlimited ? 999 : (sqVariant.stock?.quantity ?? 0);
+        await supabase.from("inventory").insert({
+          variant_id: variantId,
+          product_id: productId,
+          total_stock: stock,
+        });
+      }
 
       await supabase.from("channel_listings").insert({
-        variant_id: variant.id,
+        variant_id: variantId,
         channel: "squarespace",
-        channel_sku: sqVariant.sku || sqVariant.id,
+        channel_sku: variantSku,
         channel_price: price,
         channel_product_id: sqProduct.id,
         channel_variant_id: sqVariant.id,
@@ -187,7 +224,9 @@ async function upsertProducts(supabase: any, newProducts: SqProduct[], totalFetc
     total_squarespace_products: totalFetched,
     new_products: newProducts.length,
     products_created: productsCreated,
+    products_reused: productsReused,
     variants_created: variantsCreated,
+    variants_reused: variantsReused,
     listings_created: listingsCreated,
   };
 }
