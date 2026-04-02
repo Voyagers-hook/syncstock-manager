@@ -1,0 +1,1 @@
+UPDATE channel_listings SET channel_price = channel_price * 100 WHERE channel = 'squarespace' AND channel_price IS NOT NULL;

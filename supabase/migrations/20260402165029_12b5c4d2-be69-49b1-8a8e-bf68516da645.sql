@@ -1,0 +1,1 @@
+DELETE FROM channel_listings WHERE channel = 'squarespace';
