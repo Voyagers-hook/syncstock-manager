@@ -5,10 +5,10 @@ const LOGO_URL = "https://voyagers-hook.github.io/images/logo%20trans.png";
 
 const items = [
   { icon: LayoutDashboard, label: "Dashboard", path: "/" },
-  { icon: Package, label: "Products", path: "/" },
+  { icon: Package, label: "Products", path: "/products" },
   { icon: Link2, label: "Merge Items", path: "/merge" },
   { icon: Trophy, label: "Top Sellers", path: "/top-sellers" },
-  { icon: Settings, label: "Settings", path: "/" },
+  { icon: Settings, label: "Settings", path: "/settings" },
 ];
 
 const DashboardSidebar = () => {
