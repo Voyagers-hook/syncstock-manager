@@ -40,20 +40,16 @@ async function fetchRowsByIds<T>(
   return results.flat();
 }
 
-export function useProducts(search: string = "") {
+export function useProducts() {
   return useQuery({
-    queryKey: ["products", search],
+    queryKey: ["products"],
     queryFn: async (): Promise<ProductWithDetails[]> => {
       const products = await fetchAllPages<Product>(async (from, to) => {
-        let query = supabase
+        const query = supabase
           .from("products")
           .select("*")
           .eq("active", true)
           .order("name");
-
-        if (search) {
-          query = query.or(`name.ilike.%${search}%,sku.ilike.%${search}%`);
-        }
 
         const { data, error } = await query.range(from, to);
         return { data, error };

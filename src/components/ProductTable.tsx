@@ -1,4 +1,4 @@
-import { useState, useDeferredValue } from "react";
+import { useState, useMemo } from "react";
 import { ChevronDown, ChevronRight, Loader2, Search } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -9,10 +9,17 @@ import InlineEditCell from "./InlineEditCell";
 
 const ProductTable = () => {
   const [search, setSearch] = useState("");
-  const deferredSearch = useDeferredValue(search);
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
-  const { data: products = [], isLoading, error } = useProducts(deferredSearch);
+  const { data: allProducts = [], isLoading, error } = useProducts();
+
+  const products = useMemo(() => {
+    if (!search) return allProducts;
+    const q = search.toLowerCase();
+    return allProducts.filter(
+      (p) => p.name.toLowerCase().includes(q) || (p.sku && p.sku.toLowerCase().includes(q))
+    );
+  }, [allProducts, search]);
   const updateProduct = useUpdateProduct();
   const updateChannelPrice = useUpdateChannelPrice();
   const updateInventory = useUpdateInventory();
@@ -87,7 +94,7 @@ const ProductTable = () => {
       <div className="flex items-center justify-between p-5 border-b">
         <div>
           <h2 className="text-lg font-semibold text-foreground">Inventory</h2>
-          <p className="text-sm text-muted-foreground">{products.length} products{deferredSearch !== search ? " (searching…)" : ""}</p>
+          <p className="text-sm text-muted-foreground">{products.length} products</p>
         </div>
         <div className="relative">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
@@ -131,8 +138,8 @@ const ProductTable = () => {
                     <td className="px-5 py-3.5">
                       <span className="text-xs font-mono text-muted-foreground">{product.sku ?? "—"}</span>
                     </td>
-                    <td className="px-5 py-3.5">
-                      <span className="text-sm font-medium text-foreground truncate max-w-[250px] block">{product.name}</span>
+                    <td className="px-5 py-3.5 min-w-[350px]">
+                      <span className="text-sm font-medium text-foreground">{product.name}</span>
                     </td>
                     <td className="px-5 py-3.5 text-center">
                       <InlineEditCell
