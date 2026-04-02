@@ -185,6 +185,7 @@ const ProductTable = () => {
                         <Trash2 className="w-4 h-4" />
                       </button>
                     </td>
+                  </tr>
                   {expandedId === product.id && product.variants.length > 0 && (
                     <tr key={`${product.id}-exp`} className="bg-muted/20">
                       <td colSpan={10} className="px-12 py-3">
