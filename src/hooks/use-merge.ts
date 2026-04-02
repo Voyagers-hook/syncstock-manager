@@ -28,7 +28,7 @@ export interface MergeAction {
 }
 
 async function fetchByIds<T>(
-  table: "variants" | "channel_listings" | "inventory",
+  table: string,
   column: string,
   ids: string[],
   select: string = "*",
@@ -38,12 +38,12 @@ async function fetchByIds<T>(
   const results = await Promise.all(
     chunks.map((chunk) =>
       fetchAllPages<T>(async (from, to) => {
-        const resp = await supabase
+        const resp = await (supabase as any)
           .from(table)
           .select(select)
           .in(column, chunk)
           .range(from, to);
-        return { data: resp.data as unknown as T[] | null, error: resp.error };
+        return { data: resp.data as T[] | null, error: resp.error };
       }, PAGE_SIZE),
     ),
   );
