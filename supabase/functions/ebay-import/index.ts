@@ -29,8 +29,11 @@ Deno.serve(async (req) => {
     // Determine which token to use
     let userToken: string;
 
-    if (oauthRefreshToken && ebayCertId) {
-      // Check for rotated token in DB first
+    if (authToken) {
+      // Use Auth'n'Auth token directly with Trading API
+      userToken = authToken;
+    } else if (oauthRefreshToken && ebayCertId) {
+      // OAuth flow: exchange refresh token for access token
       const { data: storedToken } = await supabase
         .from("sync_secrets")
         .select("value")
@@ -38,12 +41,9 @@ Deno.serve(async (req) => {
         .single();
       const tokenToUse = storedToken?.value || oauthRefreshToken;
       userToken = await getOAuthAccessToken(ebayAppId, ebayCertId, tokenToUse, supabase);
-    } else if (authToken) {
-      // Use Auth'n'Auth token directly
-      userToken = authToken;
     } else {
       return new Response(
-        JSON.stringify({ error: "No eBay token found. Set EBAY_OAUTH_REFRESH_TOKEN or EBAY_REFRESH_TOKEN." }),
+        JSON.stringify({ error: "No eBay token found. Set EBAY_REFRESH_TOKEN or EBAY_OAUTH_REFRESH_TOKEN." }),
         { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
