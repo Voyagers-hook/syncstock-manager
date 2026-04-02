@@ -13,8 +13,8 @@ const PAGE_SIZE = 1000;
 const FILTER_CHUNK_SIZE = 150;
 
 async function fetchRowsByIds<T>(
-  table: "variants" | "inventory" | "channel_listings",
-  column: "product_id" | "variant_id",
+  table: string,
+  column: string,
   ids: string[],
 ): Promise<T[]> {
   if (!ids.length) return [];
@@ -24,13 +24,13 @@ async function fetchRowsByIds<T>(
     chunks.map((chunk) =>
       fetchAllPages<T>(
         async (from, to) => {
-          const { data, error } = await supabase
+          const resp = await (supabase as any)
             .from(table)
             .select("*")
             .in(column, chunk)
             .range(from, to);
 
-          return { data, error };
+          return { data: resp.data as T[] | null, error: resp.error };
         },
         PAGE_SIZE,
       ),
