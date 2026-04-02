@@ -23,12 +23,15 @@ async function fetchRowsByIds<T>(
   const results = await Promise.all(
     chunks.map((chunk) =>
       fetchAllPages<T>(
-        (from, to) =>
-          supabase
+        async (from, to) => {
+          const { data, error } = await supabase
             .from(table)
             .select("*")
             .in(column, chunk)
-            .range(from, to),
+            .range(from, to);
+
+          return { data, error };
+        },
         PAGE_SIZE,
       ),
     ),
