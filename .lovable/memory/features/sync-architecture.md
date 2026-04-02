@@ -1,26 +1,24 @@
 ---
-name: Sync architecture
-description: How eBay/Squarespace sync works via GitHub Actions, bugs fixed Apr 2026
+name: Sync architecture v2
+description: Edge function based sync - eBay/Squarespace import via Lovable Cloud, Apr 2026
 type: feature
 ---
-## Architecture
-- Dashboard (Lovable React) reads/writes Supabase directly via anon key
-- Sync scripts (Python) run as GitHub Actions with service_role key
-- Hourly: sync-hourly.yml → python main.py --mode full
-- Quick Sync: sync-quick.yml → python main.py --mode quick (workflow_dispatch)
+## Architecture v2 (Apr 2026)
+- Dashboard reads/writes Lovable Cloud Supabase (ymztzqmhtxygzebrofrp)
+- Sync runs as **edge functions** called directly from dashboard buttons
+- No external Python scripts or GitHub Actions needed
 
-## Sync flow
-1. Dashboard edit → writes to Supabase + sets variants.needs_sync=TRUE
-2. Hourly job picks up needs_sync=TRUE → pushes stock+price to eBay & Squarespace
-3. Sets needs_sync=FALSE + last_synced_at
+## Edge Functions
+- `ebay-import`: Fetches all eBay active listings via Trading API (GetMyeBaySelling), creates products/variants/inventory/channel_listings. Auto-rotates refresh token via sync_secrets table.
+- `squarespace-import`: Fetches all Squarespace products via Commerce API, creates products/variants/inventory/channel_listings.
 
-## Bugs fixed (Apr 2026)
-1. Duplicate imports: sync_missing_ebay_listings() re-expanded ALL listings hourly → replaced with sync_new_ebay_listings_only() using StartTimeFrom
-2. Stock push failures: channel_variant_id had broken placeholders like "12345-v0" → now calls refresh_ebay_variant_metadata() before every push
-3. Price sync: dashboard wasn't setting needs_sync=TRUE → fixed in use-products.ts hooks
-4. bulk_insert_rows: no ON CONFLICT handling → added ignore-duplicates resolution
-5. 24h catalogue refresh: was only running on first run → now triggers every 24h
-6. run_quick_check: was calling broken sync_missing_ebay_listings → now uses sync_product_catalogue
+## Resumable design
+- Both functions batch-fetch existing channel_product_ids first, then only insert new items
+- Safe to re-run: won't duplicate, just picks up new listings
 
-## GitHub secrets needed
-SQUARESPACE_API_KEY, EBAY_APP_ID, EBAY_CERT_ID, EBAY_REFRESH_TOKEN, SUPABASE_URL, SUPABASE_SERVICE_KEY
+## Token rotation
+- eBay refresh tokens are single-use. After each token exchange, the new refresh_token is stored in sync_secrets table (key: ebay_refresh_token)
+- On next run, function checks sync_secrets first before using env var
+
+## Secrets needed (Lovable Cloud)
+SQUARESPACE_API_KEY, EBAY_APP_ID, EBAY_CERT_ID, EBAY_REFRESH_TOKEN
