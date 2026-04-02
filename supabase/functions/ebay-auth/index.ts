@@ -38,54 +38,19 @@ Deno.serve(async (req) => {
     const ruName = Deno.env.get("EBAY_RUNAME");
     
     if (!ruName) {
-      // Return instructions page
       return new Response(
-        `<!DOCTYPE html>
-<html><head><title>eBay Auth Setup</title>
-<style>
-  body { font-family: system-ui; max-width: 600px; margin: 40px auto; padding: 20px; background: #0f172a; color: #e2e8f0; }
-  code { background: #1e293b; padding: 2px 6px; border-radius: 4px; font-size: 14px; word-break: break-all; }
-  .box { background: #1e293b; padding: 16px; border-radius: 8px; margin: 16px 0; }
-  a { color: #2dd4bf; }
-  h1 { color: #2dd4bf; }
-  ol li { margin: 12px 0; }
-</style>
-</head><body>
-<h1>eBay OAuth Setup</h1>
-<p>One more step needed! You need to add a redirect URL to your eBay app:</p>
-<ol>
-  <li>Go to <a href="https://developer.ebay.com/my/keys" target="_blank">developer.ebay.com/my/keys</a></li>
-  <li>Find your <strong>Production</strong> app and click <strong>"Edit"</strong> next to the OAuth section</li>
-  <li>Under <strong>"Your auth accepted URL"</strong>, add this URL:</li>
-</ol>
-<div class="box">
-  <code>${redirectUri}</code>
-</div>
-<ol start="4">
-  <li>Copy the <strong>"RuName"</strong> shown on that page (it looks like <code>Your_Name-YourApp-SBX-xxx</code>)</li>
-  <li>Come back to Lovable and tell me the RuName — I'll save it and give you a clickable auth link</li>
-</ol>
-<p>That's it! After that, you'll just click one link to authorize and the token saves automatically.</p>
-</body></html>`,
-        { headers: { ...corsHeaders, "Content-Type": "text/html" }, status: 200 }
+        JSON.stringify({ error: "EBAY_RUNAME not configured. Please add it as a secret." }),
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
-    // Build the eBay consent URL
+    // Build the eBay consent URL and redirect directly (302)
     const consentUrl = `https://auth.ebay.com/oauth2/authorize?client_id=${encodeURIComponent(ebayAppId)}&redirect_uri=${encodeURIComponent(ruName)}&response_type=code&scope=${encodeURIComponent(scopes)}`;
 
-    return new Response(
-      `<!DOCTYPE html>
-<html><head><title>eBay Authorization</title>
-<meta http-equiv="refresh" content="0;url=${consentUrl}">
-<style>body { font-family: system-ui; text-align: center; margin-top: 100px; background: #0f172a; color: #e2e8f0; }
-a { color: #2dd4bf; font-size: 18px; }</style>
-</head><body>
-<p>Redirecting to eBay...</p>
-<p><a href="${consentUrl}">Click here if not redirected</a></p>
-</body></html>`,
-      { headers: { ...corsHeaders, "Content-Type": "text/html" }, status: 200 }
-    );
+    return new Response(null, {
+      status: 302,
+      headers: { ...corsHeaders, Location: consentUrl },
+    });
   }
 
   // Step 2: Exchange authorization code for tokens
