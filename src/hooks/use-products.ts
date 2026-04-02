@@ -30,7 +30,7 @@ async function fetchRowsByIds<T>(
             .in(column, chunk)
             .range(from, to);
 
-          return { data, error };
+          return { data: (data as T[] | null), error };
         },
         PAGE_SIZE,
       ),
