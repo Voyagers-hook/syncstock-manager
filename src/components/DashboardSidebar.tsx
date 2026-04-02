@@ -25,8 +25,7 @@ const DashboardSidebar = () => {
 
       <nav className="flex-1 px-3 py-4 space-y-1">
         {items.map((item) => {
-          const isActive = location.pathname === item.path && 
-            (item.path !== "/" || ["Dashboard", "Products"].includes(item.label));
+          const isActive = location.pathname === item.path;
           
           return (
             <Link
