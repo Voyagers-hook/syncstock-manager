@@ -76,16 +76,8 @@ Deno.serve(async (req) => {
     
     if (!tokenResp.ok) {
       return new Response(
-        `<!DOCTYPE html>
-<html><head><title>eBay Auth Error</title>
-<style>body { font-family: system-ui; max-width: 600px; margin: 40px auto; padding: 20px; background: #0f172a; color: #e2e8f0; }
-.error { background: #7f1d1d; padding: 16px; border-radius: 8px; } code { font-size: 12px; word-break: break-all; }</style>
-</head><body>
-<h1>❌ Token exchange failed</h1>
-<div class="error"><code>${tokenBody}</code></div>
-<p>Please try again or contact support.</p>
-</body></html>`,
-        { headers: { ...corsHeaders, "Content-Type": "text/html" }, status: 200 }
+        JSON.stringify({ error: "Token exchange failed", details: tokenBody }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
@@ -112,26 +104,18 @@ Deno.serve(async (req) => {
     }
 
     return new Response(
-      `<!DOCTYPE html>
-<html><head><title>eBay Auth Success</title>
-<style>body { font-family: system-ui; max-width: 600px; margin: 40px auto; padding: 20px; background: #0f172a; color: #e2e8f0; text-align: center; }
-.success { background: #14532d; padding: 24px; border-radius: 12px; margin: 24px 0; }
-h1 { color: #2dd4bf; font-size: 48px; margin-bottom: 8px; }</style>
-</head><body>
-<div class="success">
-<h1>✅</h1>
-<h2>eBay Connected!</h2>
-<p>Your eBay tokens have been saved. You can close this tab and run the eBay sync from your dashboard.</p>
-<p style="color: #94a3b8; font-size: 14px;">Refresh token expires: ${tokenData.refresh_token_expires_in ? Math.round(tokenData.refresh_token_expires_in / 86400) + ' days' : 'unknown'}</p>
-</div>
-</body></html>`,
-      { headers: { ...corsHeaders, "Content-Type": "text/html" }, status: 200 }
+      JSON.stringify({
+        success: true,
+        message: "eBay connected! You can close this tab and run the eBay sync from your dashboard.",
+        refresh_token_expires_days: tokenData.refresh_token_expires_in ? Math.round(tokenData.refresh_token_expires_in / 86400) : null,
+      }),
+      { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 200 }
     );
   } catch (error) {
     const msg = error instanceof Error ? error.message : "Unknown error";
     return new Response(
-      `<!DOCTYPE html><html><body><h1>Error</h1><p>${msg}</p></body></html>`,
-      { headers: { ...corsHeaders, "Content-Type": "text/html" }, status: 500 }
+      JSON.stringify({ error: msg }),
+      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }
 });
