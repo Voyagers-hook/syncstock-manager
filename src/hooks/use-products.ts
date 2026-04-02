@@ -44,7 +44,7 @@ export function useProducts(search: string = "") {
   return useQuery({
     queryKey: ["products", search],
     queryFn: async (): Promise<ProductWithDetails[]> => {
-      const products = await fetchAllPages<Product>((from, to) => {
+      const products = await fetchAllPages<Product>(async (from, to) => {
         let query = supabase
           .from("products")
           .select("*")
@@ -55,7 +55,8 @@ export function useProducts(search: string = "") {
           query = query.or(`name.ilike.%${search}%,sku.ilike.%${search}%`);
         }
 
-        return query.range(from, to);
+        const { data, error } = await query.range(from, to);
+        return { data, error };
       }, PAGE_SIZE);
 
       if (!products.length) return [];
