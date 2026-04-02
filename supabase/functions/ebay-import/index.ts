@@ -12,38 +12,48 @@ Deno.serve(async (req) => {
   const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
   const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
+  // Try OAuth refresh token first, fall back to Auth'n'Auth token
   const ebayAppId = Deno.env.get("EBAY_APP_ID");
   const ebayCertId = Deno.env.get("EBAY_CERT_ID");
-  let refreshToken = Deno.env.get("EBAY_REFRESH_TOKEN");
+  const oauthRefreshToken = Deno.env.get("EBAY_OAUTH_REFRESH_TOKEN");
+  const authToken = Deno.env.get("EBAY_REFRESH_TOKEN");
 
-  if (!ebayAppId || !ebayCertId || !refreshToken) {
+  if (!ebayAppId) {
     return new Response(
-      JSON.stringify({ error: "Missing eBay credentials" }),
+      JSON.stringify({ error: "Missing EBAY_APP_ID" }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }
 
-  // Check if we have a rotated refresh token stored in DB
-  const { data: storedToken } = await supabase
-    .from("sync_secrets")
-    .select("value")
-    .eq("key", "ebay_refresh_token")
-    .single();
-  if (storedToken?.value) {
-    refreshToken = storedToken.value;
-  }
-
   try {
-    // Step 1: Get access token (and rotate refresh token)
-    const accessToken = await getAccessToken(ebayAppId, ebayCertId, refreshToken, supabase);
+    // Determine which token to use
+    let userToken: string;
 
-    // Step 2: Fetch ALL eBay listings
-    const listings = await fetchAllEbayListings(accessToken);
+    if (oauthRefreshToken && ebayCertId) {
+      // Check for rotated token in DB first
+      const { data: storedToken } = await supabase
+        .from("sync_secrets")
+        .select("value")
+        .eq("key", "ebay_refresh_token")
+        .single();
+      const tokenToUse = storedToken?.value || oauthRefreshToken;
+      userToken = await getOAuthAccessToken(ebayAppId, ebayCertId, tokenToUse, supabase);
+    } else if (authToken) {
+      // Use Auth'n'Auth token directly
+      userToken = authToken;
+    } else {
+      return new Response(
+        JSON.stringify({ error: "No eBay token found. Set EBAY_OAUTH_REFRESH_TOKEN or EBAY_REFRESH_TOKEN." }),
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
 
-    // Step 3: Upsert into database
+    // Fetch ALL eBay listings
+    const listings = await fetchAllEbayListings(userToken, ebayAppId);
+
+    // Upsert into database
     const stats = await upsertListings(supabase, listings);
 
-    // Log success
     await supabase.from("sync_log").insert({
       sync_type: "ebay_import",
       status: "completed",
