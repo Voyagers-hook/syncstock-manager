@@ -16,64 +16,52 @@ export function useQuickSync() {
     const label = mode === "full" ? "Full Catalogue Reset" : "Quick Sync";
 
     try {
-      // Insert a sync_log row so the external runner picks it up
-      const now = new Date().toISOString();
-      await supabase
-        .from("sync_log")
-        .insert({ sync_type: mode, status: "started", started_at: now, source: "dashboard" });
+      toast.info(`${label} started — importing from eBay & Squarespace…`);
 
-      // Flag all variants for sync so the runner processes everything
-      await supabase
-        .from("variants")
-        .update({ needs_sync: true, updated_at: new Date().toISOString() })
-        .neq("needs_sync", true);
+      // Call both import edge functions in parallel
+      const [ebayResult, sqResult] = await Promise.all([
+        supabase.functions.invoke("ebay-import", { body: { mode } }),
+        supabase.functions.invoke("squarespace-import", { body: { mode } }),
+      ]);
 
-      toast.success(`${label} requested — syncing now.`);
+      const errors: string[] = [];
+      let totalItems = 0;
 
-      // Poll for completion
-      pollForCompletion(mode, now, queryClient);
-    } catch {
-      toast.error(`${label} failed — check your connection.`);
+      if (ebayResult.error) {
+        errors.push(`eBay: ${ebayResult.error.message}`);
+      } else {
+        const d = ebayResult.data;
+        totalItems += d?.total_ebay_items ?? 0;
+        toast.success(
+          `eBay: ${d?.total_ebay_items ?? 0} items found, ${d?.products_created ?? 0} new products created`
+        );
+      }
+
+      if (sqResult.error) {
+        errors.push(`Squarespace: ${sqResult.error.message}`);
+      } else {
+        const d = sqResult.data;
+        totalItems += d?.total_squarespace_products ?? 0;
+        toast.success(
+          `Squarespace: ${d?.total_squarespace_products ?? 0} items found, ${d?.products_created ?? 0} new products created`
+        );
+      }
+
+      if (errors.length) {
+        toast.error(errors.join(". "));
+      }
+
+      // Refresh dashboard data
+      queryClient.invalidateQueries({ queryKey: ["products"] });
+      queryClient.invalidateQueries({ queryKey: ["unmerged-products"] });
+    } catch (err) {
+      toast.error(`${label} failed — ${err instanceof Error ? err.message : "check your connection."}`);
     } finally {
       setSyncing(false);
     }
   }, [syncing, queryClient]);
 
   return { triggerSync, syncing };
-}
-
-async function pollForCompletion(
-  mode: string,
-  startedAfter: string,
-  queryClient: ReturnType<typeof useQueryClient>,
-) {
-  for (let i = 0; i < 30; i++) {
-    await new Promise((r) => setTimeout(r, 10000)); // every 10s
-
-    const { data } = await supabase
-      .from("sync_log")
-      .select("status, details, error_message")
-      .eq("sync_type", mode)
-      .gte("started_at", startedAfter)
-      .order("started_at", { ascending: false })
-      .limit(1);
-
-    const row = data?.[0];
-    if (!row) continue;
-
-    if (row.status === "completed") {
-      const details = row.details ? JSON.parse(row.details) : {};
-      toast.success(`Sync complete — ${details.items_synced ?? "all"} items synced.`);
-      queryClient.invalidateQueries({ queryKey: ["products"] });
-      return;
-    }
-    if (row.status === "failed") {
-      toast.error(`Sync failed: ${row.error_message ?? "unknown error"}`);
-      return;
-    }
-  }
-  // After 5 minutes of polling, refresh anyway
-  queryClient.invalidateQueries({ queryKey: ["products"] });
 }
 
 interface QuickSyncButtonProps {
