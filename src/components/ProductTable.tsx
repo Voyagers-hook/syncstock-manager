@@ -1,4 +1,4 @@
-import { useState, useDeferredValue } from "react";
+import { useState, useMemo } from "react";
 import { ChevronDown, ChevronRight, Loader2, Search } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -9,10 +9,17 @@ import InlineEditCell from "./InlineEditCell";
 
 const ProductTable = () => {
   const [search, setSearch] = useState("");
-  const deferredSearch = useDeferredValue(search);
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
-  const { data: products = [], isLoading, error } = useProducts(deferredSearch);
+  const { data: allProducts = [], isLoading, error } = useProducts();
+
+  const products = useMemo(() => {
+    if (!search) return allProducts;
+    const q = search.toLowerCase();
+    return allProducts.filter(
+      (p) => p.name.toLowerCase().includes(q) || (p.sku && p.sku.toLowerCase().includes(q))
+    );
+  }, [allProducts, search]);
   const updateProduct = useUpdateProduct();
   const updateChannelPrice = useUpdateChannelPrice();
   const updateInventory = useUpdateInventory();
