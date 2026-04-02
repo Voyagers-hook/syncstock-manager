@@ -187,7 +187,7 @@ interface ProductRowProps {
   onStartEdit: () => void;
   onSave: () => void;
   onCancel: () => void;
-  onEditChange: (v: typeof ProductRow extends React.FC<infer P> ? P["editValues"] : never) => void;
+  onEditChange: (v: { stock?: number; ebayPrice?: number; sqspPrice?: number; costPrice?: number }) => void;
   getStockBadge: (stock: number) => React.ReactNode;
   getMargin: (p: ProductWithDetails) => string;
 }
