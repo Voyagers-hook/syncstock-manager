@@ -24,8 +24,19 @@ Deno.serve(async (req) => {
     // Fetch ALL Squarespace products (paginated)
     const products = await fetchAllSquarespaceProducts(sqApiKey);
 
-    // Upsert into database
-    const stats = await upsertProducts(supabase, products);
+    // Get all existing Squarespace product IDs in one query
+    const { data: existingListings } = await supabase
+      .from("channel_listings")
+      .select("channel_product_id")
+      .eq("channel", "squarespace");
+    
+    const existingIds = new Set((existingListings ?? []).map((l: any) => l.channel_product_id));
+
+    // Filter to only new products
+    const newProducts = products.filter(p => !existingIds.has(p.id));
+
+    // Upsert only new products
+    const stats = await upsertProducts(supabase, newProducts, products.length);
 
     await supabase.from("sync_log").insert({
       sync_type: "squarespace_import",
@@ -98,7 +109,6 @@ async function fetchAllSquarespaceProducts(apiKey: string): Promise<SqProduct[]>
     const products = data.products || [];
     allProducts.push(...products);
 
-    // Check for pagination
     if (data.pagination?.hasNextPage && data.pagination?.nextPageCursor) {
       cursor = data.pagination.nextPageCursor;
     } else {
@@ -109,38 +119,12 @@ async function fetchAllSquarespaceProducts(apiKey: string): Promise<SqProduct[]>
   return allProducts;
 }
 
-async function upsertProducts(supabase: any, sqProducts: SqProduct[]) {
+async function upsertProducts(supabase: any, newProducts: SqProduct[], totalFetched: number) {
   let productsCreated = 0;
   let variantsCreated = 0;
   let listingsCreated = 0;
 
-  for (const sqProduct of sqProducts) {
-    // Check if already imported via channel_listings
-    const { data: existingListings } = await supabase
-      .from("channel_listings")
-      .select("id")
-      .eq("channel", "squarespace")
-      .eq("channel_product_id", sqProduct.id)
-      .limit(1);
-
-    if (existingListings && existingListings.length > 0) {
-      // Already exists — update prices for all variants
-      for (const sqVariant of sqProduct.variants) {
-        const price = parseFloat(sqVariant.pricing?.basePrice?.value || "0") / 100;
-        await supabase
-          .from("channel_listings")
-          .update({
-            channel_price: price,
-            last_synced_at: new Date().toISOString(),
-          })
-          .eq("channel", "squarespace")
-          .eq("channel_product_id", sqProduct.id)
-          .eq("channel_variant_id", sqVariant.id);
-      }
-      continue;
-    }
-
-    // Create new product
+  for (const sqProduct of newProducts) {
     const imageUrl = sqProduct.images?.[0]?.url || null;
     const { data: product, error: prodErr } = await supabase
       .from("products")
@@ -200,7 +184,8 @@ async function upsertProducts(supabase: any, sqProducts: SqProduct[]) {
   }
 
   return {
-    total_squarespace_products: sqProducts.length,
+    total_squarespace_products: totalFetched,
+    new_products: newProducts.length,
     products_created: productsCreated,
     variants_created: variantsCreated,
     listings_created: listingsCreated,
