@@ -187,7 +187,7 @@ const ProductTable = () => {
                     </td>
                   {expandedId === product.id && product.variants.length > 0 && (
                     <tr key={`${product.id}-exp`} className="bg-muted/20">
-                      <td colSpan={9} className="px-12 py-3">
+                      <td colSpan={10} className="px-12 py-3">
                         <div className="flex flex-wrap gap-2">
                           {product.variants.map((v) => (
                             <Badge key={v.id} variant="outline" className="text-xs">
