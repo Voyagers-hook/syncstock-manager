@@ -12,38 +12,48 @@ Deno.serve(async (req) => {
   const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
   const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
+  // Try OAuth refresh token first, fall back to Auth'n'Auth token
   const ebayAppId = Deno.env.get("EBAY_APP_ID");
   const ebayCertId = Deno.env.get("EBAY_CERT_ID");
-  let refreshToken = Deno.env.get("EBAY_REFRESH_TOKEN");
+  const oauthRefreshToken = Deno.env.get("EBAY_OAUTH_REFRESH_TOKEN");
+  const authToken = Deno.env.get("EBAY_REFRESH_TOKEN");
 
-  if (!ebayAppId || !ebayCertId || !refreshToken) {
+  if (!ebayAppId) {
     return new Response(
-      JSON.stringify({ error: "Missing eBay credentials" }),
+      JSON.stringify({ error: "Missing EBAY_APP_ID" }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }
 
-  // Check if we have a rotated refresh token stored in DB
-  const { data: storedToken } = await supabase
-    .from("sync_secrets")
-    .select("value")
-    .eq("key", "ebay_refresh_token")
-    .single();
-  if (storedToken?.value) {
-    refreshToken = storedToken.value;
-  }
-
   try {
-    // Step 1: Get access token (and rotate refresh token)
-    const accessToken = await getAccessToken(ebayAppId, ebayCertId, refreshToken, supabase);
+    // Determine which token to use
+    let userToken: string;
 
-    // Step 2: Fetch ALL eBay listings
-    const listings = await fetchAllEbayListings(accessToken);
+    if (authToken) {
+      // Use Auth'n'Auth token directly with Trading API
+      userToken = authToken;
+    } else if (oauthRefreshToken && ebayCertId) {
+      // OAuth flow: exchange refresh token for access token
+      const { data: storedToken } = await supabase
+        .from("sync_secrets")
+        .select("value")
+        .eq("key", "ebay_refresh_token")
+        .single();
+      const tokenToUse = storedToken?.value || oauthRefreshToken;
+      userToken = await getOAuthAccessToken(ebayAppId, ebayCertId, tokenToUse, supabase);
+    } else {
+      return new Response(
+        JSON.stringify({ error: "No eBay token found. Set EBAY_REFRESH_TOKEN or EBAY_OAUTH_REFRESH_TOKEN." }),
+        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
 
-    // Step 3: Upsert into database
+    // Fetch ALL eBay listings
+    const listings = await fetchAllEbayListings(userToken, ebayAppId);
+
+    // Upsert into database
     const stats = await upsertListings(supabase, listings);
 
-    // Log success
     await supabase.from("sync_log").insert({
       sync_type: "ebay_import",
       status: "completed",
@@ -73,7 +83,7 @@ Deno.serve(async (req) => {
   }
 });
 
-async function getAccessToken(
+async function getOAuthAccessToken(
   appId: string,
   certId: string,
   refreshToken: string,
@@ -96,7 +106,7 @@ async function getAccessToken(
 
   if (!resp.ok) {
     const body = await resp.text();
-    throw new Error(`eBay token exchange failed [${resp.status}]: ${body}`);
+    throw new Error(`eBay OAuth token exchange failed [${resp.status}]: ${body}`);
   }
 
   const data = await resp.json();
@@ -135,7 +145,7 @@ interface EbayVariation {
   sellingStatus?: { quantitySold: number };
 }
 
-async function fetchAllEbayListings(accessToken: string): Promise<EbayItem[]> {
+async function fetchAllEbayListings(authToken: string, appId: string): Promise<EbayItem[]> {
   const allItems: EbayItem[] = [];
   let page = 1;
   const entriesPerPage = 200;
@@ -145,7 +155,7 @@ async function fetchAllEbayListings(accessToken: string): Promise<EbayItem[]> {
     const xmlBody = `<?xml version="1.0" encoding="utf-8"?>
 <GetMyeBaySellingRequest xmlns="urn:ebay:apis:eBLBaseComponents">
   <RequesterCredentials>
-    <eBayAuthToken>${accessToken}</eBayAuthToken>
+    <eBayAuthToken>${authToken}</eBayAuthToken>
   </RequesterCredentials>
   <ActiveList>
     <Sort>ItemID</Sort>
@@ -176,7 +186,9 @@ async function fetchAllEbayListings(accessToken: string): Promise<EbayItem[]> {
     }
 
     const xml = await resp.text();
+    console.log(`eBay page ${page} response length: ${xml.length}, first 500 chars:`, xml.substring(0, 500));
     const items = parseEbayXml(xml);
+    console.log(`eBay page ${page}: parsed ${items.length} items`);
 
     if (!items.length) break;
     allItems.push(...items);
