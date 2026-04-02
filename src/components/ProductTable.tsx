@@ -23,6 +23,15 @@ const ProductTable = () => {
   const updateProduct = useUpdateProduct();
   const updateChannelPrice = useUpdateChannelPrice();
   const updateInventory = useUpdateInventory();
+  const deleteProduct = useDeleteProduct();
+
+  const handleDelete = (p: ProductWithDetails) => {
+    if (!confirm(`Delete "${p.name}"? This cannot be undone.`)) return;
+    deleteProduct.mutate(p.id, {
+      onSuccess: () => toast.success(`Deleted ${p.name}`),
+      onError: () => toast.error("Failed to delete product"),
+    });
+  };
 
   const handleSaveStock = (p: ProductWithDetails, newStock: number) => {
     if (!p.inventory[0] || !p.variants[0]) return;
