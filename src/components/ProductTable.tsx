@@ -51,6 +51,7 @@ const ProductTable = () => {
         promises.push(
           updateChannelPrice.mutateAsync({
             listingId: ebayListing.id,
+            variantId: p.variants[0]?.id ?? "",
             price: editValues.ebayPrice,
           })
         );
@@ -61,6 +62,7 @@ const ProductTable = () => {
         promises.push(
           updateChannelPrice.mutateAsync({
             listingId: sqspListing.id,
+            variantId: p.variants[0]?.id ?? "",
             price: editValues.sqspPrice,
           })
         );
@@ -70,6 +72,7 @@ const ProductTable = () => {
         promises.push(
           updateInventory.mutateAsync({
             inventoryId: p.inventory[0].id,
+            variantId: p.variants[0]?.id ?? "",
             stock: editValues.stock,
           })
         );
