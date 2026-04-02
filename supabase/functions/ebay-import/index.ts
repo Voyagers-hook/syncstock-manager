@@ -145,7 +145,7 @@ interface EbayVariation {
   sellingStatus?: { quantitySold: number };
 }
 
-async function fetchAllEbayListings(accessToken: string): Promise<EbayItem[]> {
+async function fetchAllEbayListings(authToken: string, appId: string): Promise<EbayItem[]> {
   const allItems: EbayItem[] = [];
   let page = 1;
   const entriesPerPage = 200;
