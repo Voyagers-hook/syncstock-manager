@@ -31,11 +31,11 @@ export function useQuickSync() {
     setSyncing(true);
 
     try {
-      // Record the sync timestamp in Supabase so the hourly job can check it
+      // Record the sync in sync_log
       const now = new Date().toISOString();
       await supabase
         .from("sync_log")
-        .insert({ type: "quick_sync", triggered_at: now, status: "triggered" });
+        .insert({ sync_type: "quick", status: "triggered", started_at: now });
 
       // Try to trigger GitHub Actions workflow
       const token = localStorage.getItem("github_pat");
