@@ -17,7 +17,7 @@ export function useProducts(search: string = "") {
         query = query.or(`name.ilike.%${search}%,sku.ilike.%${search}%`);
       }
 
-      const { data: products, error: pErr } = await query.limit(100);
+      const { data: products, error: pErr } = await query;
       if (pErr) throw pErr;
       if (!products?.length) return [];
 
