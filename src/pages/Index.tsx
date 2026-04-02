@@ -1,16 +1,48 @@
-// Update this page (the content is just a fallback if you fail to update the page)
+import DashboardSidebar from "@/components/DashboardSidebar";
+import StatsCards from "@/components/StatsCards";
+import ProductTable from "@/components/ProductTable";
+import { RefreshCw, Plus } from "lucide-react";
+import { Button } from "@/components/ui/button";
 
-// IMPORTANT: Fully REPLACE this with your own code
-const PlaceholderIndex = () => {
-  // PLACEHOLDER: Replace this entire return statement with the user's app.
-  // The inline background color is intentionally not part of the design system.
+const Index = () => {
   return (
-    <div className="flex min-h-screen items-center justify-center" style={{ backgroundColor: '#fcfbf8' }}>
-      <img data-lovable-blank-page-placeholder="REMOVE_THIS" src="/placeholder.svg" alt="Your app will live here!" />
+    <div className="min-h-screen bg-background">
+      <DashboardSidebar />
+
+      {/* Main content */}
+      <main className="ml-60 p-8">
+        {/* Header */}
+        <div className="flex items-center justify-between mb-8">
+          <div>
+            <h1 className="text-2xl font-bold text-foreground tracking-tight">
+              Inventory Dashboard
+            </h1>
+            <p className="text-sm text-muted-foreground mt-1">
+              Manage stock across eBay & Squarespace
+            </p>
+          </div>
+          <div className="flex items-center gap-3">
+            <Button variant="outline" size="sm">
+              <RefreshCw className="w-4 h-4 mr-2" />
+              Sync Now
+            </Button>
+            <Button size="sm">
+              <Plus className="w-4 h-4 mr-2" />
+              Add Product
+            </Button>
+          </div>
+        </div>
+
+        {/* Stats */}
+        <div className="mb-8">
+          <StatsCards />
+        </div>
+
+        {/* Products Table */}
+        <ProductTable />
+      </main>
     </div>
   );
 };
-
-const Index = PlaceholderIndex;
 
 export default Index;
