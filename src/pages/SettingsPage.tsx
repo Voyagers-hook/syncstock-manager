@@ -2,8 +2,11 @@ import { useEffect, useState } from "react";
 import DashboardSidebar from "@/components/DashboardSidebar";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { supabase } from "@/integrations/supabase/client";
-import { Loader2, CheckCircle, XCircle, AlertCircle } from "lucide-react";
+import { Loader2, CheckCircle, AlertCircle, RotateCcw, RefreshCw } from "lucide-react";
+import { useQuickSync } from "@/components/QuickSyncButton";
+import { toast } from "sonner";
 
 interface ChannelStats {
   channel: string;
@@ -11,19 +14,32 @@ interface ChannelStats {
   lastSynced: string | null;
 }
 
+interface SyncLogEntry {
+  sync_type: string;
+  status: string;
+  started_at: string;
+  completed_at: string | null;
+  details: string | null;
+  error_message: string | null;
+}
+
 const SettingsPage = () => {
   const [channelStats, setChannelStats] = useState<ChannelStats[]>([]);
   const [productCount, setProductCount] = useState<number | null>(null);
+  const [recentSyncs, setRecentSyncs] = useState<SyncLogEntry[]>([]);
   const [loading, setLoading] = useState(true);
+  const { triggerSync, syncing } = useQuickSync();
 
   useEffect(() => {
     async function loadStats() {
-      const [{ count: pCount }, { data: listings }] = await Promise.all([
+      const [{ count: pCount }, { data: listings }, { data: syncLogs }] = await Promise.all([
         supabase.from("products").select("*", { count: "exact", head: true }).eq("active", true),
         supabase.from("channel_listings").select("channel, last_synced_at"),
+        supabase.from("sync_log").select("sync_type, status, started_at, completed_at, details, error_message").order("started_at", { ascending: false }).limit(10),
       ]);
 
       setProductCount(pCount ?? 0);
+      setRecentSyncs((syncLogs ?? []) as SyncLogEntry[]);
 
       const statsMap = new Map<string, { count: number; lastSynced: string | null }>();
       for (const l of listings ?? []) {
@@ -48,18 +64,8 @@ const SettingsPage = () => {
   }, []);
 
   const channels = [
-    {
-      name: "eBay",
-      key: "ebay",
-      secretName: "EBAY_APP_ID",
-      description: "Product listings synced from eBay via API",
-    },
-    {
-      name: "Squarespace",
-      key: "squarespace",
-      secretName: "SQUARESPACE_API_KEY",
-      description: "Product listings synced from Squarespace Commerce API",
-    },
+    { name: "eBay", key: "ebay", description: "Product listings synced from eBay via API" },
+    { name: "Squarespace", key: "squarespace", description: "Product listings synced from Squarespace Commerce API" },
   ];
 
   return (
@@ -68,7 +74,7 @@ const SettingsPage = () => {
       <main className="ml-60 p-8">
         <div className="mb-8">
           <h1 className="text-2xl font-bold text-foreground tracking-tight">Settings</h1>
-          <p className="text-sm text-muted-foreground mt-1">Platform connections and sync status</p>
+          <p className="text-sm text-muted-foreground mt-1">Platform connections, sync controls, and history</p>
         </div>
 
         {loading ? (
@@ -94,14 +100,13 @@ const SettingsPage = () => {
               {channels.map((ch) => {
                 const stats = channelStats.find((s) => s.channel === ch.key);
                 const connected = stats && stats.count > 0;
-
                 return (
                   <Card key={ch.key}>
                     <CardHeader className="flex flex-row items-center justify-between pb-2">
                       <CardTitle className="text-base">{ch.name}</CardTitle>
                       {connected ? (
                         <Badge className="bg-success text-success-foreground">
-                          <CheckCircle className="w-3 h-3 mr-1" /> Connected
+                          <CheckCircle className="w-3 h-3 mr-1" /> {stats!.count} listings
                         </Badge>
                       ) : (
                         <Badge variant="outline" className="text-warning">
@@ -111,40 +116,80 @@ const SettingsPage = () => {
                     </CardHeader>
                     <CardContent className="space-y-2">
                       <p className="text-sm text-muted-foreground">{ch.description}</p>
-                      {stats ? (
-                        <>
-                          <p className="text-sm">
-                            <span className="font-semibold text-foreground">{stats.count}</span> listings
-                          </p>
-                          <p className="text-xs text-muted-foreground">
-                            Last synced: {stats.lastSynced ? new Date(stats.lastSynced).toLocaleString() : "Never"}
-                          </p>
-                        </>
-                      ) : (
-                        <p className="text-sm text-muted-foreground">
-                          No {ch.name} listings found. The sync pipeline needs to import them.
+                      {stats?.lastSynced && (
+                        <p className="text-xs text-muted-foreground">
+                          Last synced: {new Date(stats.lastSynced).toLocaleString()}
                         </p>
                       )}
-                      <p className="text-xs text-muted-foreground mt-2">
-                        Secret: <code className="bg-muted px-1 rounded">{ch.secretName}</code> — stored securely
-                      </p>
                     </CardContent>
                   </Card>
                 );
               })}
             </div>
 
-            {/* Sync info */}
+            {/* Sync Controls */}
             <Card>
               <CardHeader>
-                <CardTitle className="text-base">Sync Pipeline</CardTitle>
+                <CardTitle className="text-base">Sync Controls</CardTitle>
               </CardHeader>
-              <CardContent className="space-y-2 text-sm text-muted-foreground">
-                <p>Sync runs via <strong className="text-foreground">GitHub Actions</strong> on an hourly schedule.</p>
-                <p>When you edit a price or stock level in the dashboard, it's saved to the database and flagged for sync. The next scheduled run pushes changes to eBay & Squarespace.</p>
-                <p className="text-xs">
-                  GitHub secrets needed: <code className="bg-muted px-1 rounded">SQUARESPACE_API_KEY</code>, <code className="bg-muted px-1 rounded">EBAY_APP_ID</code>, <code className="bg-muted px-1 rounded">EBAY_CERT_ID</code>, <code className="bg-muted px-1 rounded">EBAY_REFRESH_TOKEN</code>, <code className="bg-muted px-1 rounded">SUPABASE_URL</code>, <code className="bg-muted px-1 rounded">SUPABASE_SERVICE_KEY</code>
+              <CardContent className="space-y-4">
+                <div className="flex items-center gap-4">
+                  <Button onClick={() => triggerSync("quick")} disabled={syncing} variant="outline">
+                    {syncing ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-2" />}
+                    Quick Sync
+                  </Button>
+                  <Button
+                    onClick={() => {
+                      if (confirm("This will re-import the full catalogue from eBay & Squarespace. Continue?")) {
+                        triggerSync("full");
+                      }
+                    }}
+                    disabled={syncing}
+                    variant="destructive"
+                  >
+                    {syncing ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : <RotateCcw className="w-4 h-4 mr-2" />}
+                    Full Catalogue Reset
+                  </Button>
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Quick Sync pushes pending changes. Full Catalogue Reset re-imports everything from both platforms. No limits — runs until complete.
                 </p>
+              </CardContent>
+            </Card>
+
+            {/* Recent Sync History */}
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base">Recent Sync History</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-2">
+                  {recentSyncs.map((s, i) => {
+                    const details = s.details ? JSON.parse(s.details) : {};
+                    return (
+                      <div key={i} className="flex items-center justify-between text-sm border-b border-border pb-2 last:border-0">
+                        <div className="flex items-center gap-3">
+                          <Badge variant={s.status === "completed" ? "default" : s.status === "failed" ? "destructive" : "outline"} className="text-xs">
+                            {s.status}
+                          </Badge>
+                          <span className="text-muted-foreground capitalize">{s.sync_type}</span>
+                          {details.items_synced != null && (
+                            <span className="text-xs text-muted-foreground">({details.items_synced} items)</span>
+                          )}
+                        </div>
+                        <div className="text-xs text-muted-foreground">
+                          {new Date(s.started_at).toLocaleString()}
+                          {s.error_message && (
+                            <span className="ml-2 text-destructive" title={s.error_message}>⚠ error</span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {recentSyncs.length === 0 && (
+                    <p className="text-sm text-muted-foreground">No sync history found.</p>
+                  )}
+                </div>
               </CardContent>
             </Card>
           </div>
