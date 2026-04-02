@@ -176,7 +176,15 @@ const ProductTable = () => {
                       <span className="text-sm font-medium text-success">{margin}{margin !== "—" ? "%" : ""}</span>
                     </td>
                     <td className="px-5 py-3.5 text-center">{getStockBadge(product.total_stock)}</td>
-                  </tr>
+                    <td className="px-2 py-3.5 text-center">
+                      <button
+                        onClick={() => handleDelete(product)}
+                        className="text-muted-foreground hover:text-destructive transition-colors"
+                        title="Delete product"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </td>
                   {expandedId === product.id && product.variants.length > 0 && (
                     <tr key={`${product.id}-exp`} className="bg-muted/20">
                       <td colSpan={9} className="px-12 py-3">
