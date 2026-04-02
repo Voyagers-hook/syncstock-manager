@@ -272,29 +272,17 @@ async function upsertListings(supabase: any, items: EbayItem[]) {
   let variantsCreated = 0;
   let listingsCreated = 0;
 
-  for (const item of items) {
-    // Check if product exists by eBay item ID (via channel_listings)
-    const { data: existingListings } = await supabase
-      .from("channel_listings")
-      .select("id, variant_id")
-      .eq("channel", "ebay")
-      .eq("channel_product_id", `v1|${item.itemId}|0`)
-      .limit(1);
+  // Batch-fetch all existing eBay product IDs
+  const { data: existingListings } = await supabase
+    .from("channel_listings")
+    .select("channel_product_id")
+    .eq("channel", "ebay");
+  const existingIds = new Set((existingListings ?? []).map((l: any) => l.channel_product_id));
 
-    if (existingListings && existingListings.length > 0) {
-      // Product already exists, update price
-      const listing = existingListings[0];
-      await supabase
-        .from("channel_listings")
-        .update({
-          channel_price: parseFloat(item.price.value),
-          last_synced_at: new Date().toISOString(),
-        })
-        .eq("id", listing.id);
-      continue;
-    }
+  // Filter to only new items
+  const newItems = items.filter(item => !existingIds.has(`v1|${item.itemId}|0`));
 
-    // Create new product
+  for (const item of newItems) {
     const { data: product, error: prodErr } = await supabase
       .from("products")
       .insert({
@@ -313,7 +301,6 @@ async function upsertListings(supabase: any, items: EbayItem[]) {
     productsCreated++;
 
     if (item.variations?.variation?.length) {
-      // Multi-variant listing
       for (const variation of item.variations.variation) {
         const variantName = variation.variationSpecifics.nameValueList
           .map((s) => s.value[0])
@@ -351,7 +338,6 @@ async function upsertListings(supabase: any, items: EbayItem[]) {
         listingsCreated++;
       }
     } else {
-      // Single variant
       const { data: variant } = await supabase
         .from("variants")
         .insert({
@@ -384,6 +370,7 @@ async function upsertListings(supabase: any, items: EbayItem[]) {
 
   return {
     total_ebay_items: items.length,
+    new_items: newItems.length,
     products_created: productsCreated,
     variants_created: variantsCreated,
     listings_created: listingsCreated,
