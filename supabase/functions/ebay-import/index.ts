@@ -186,7 +186,9 @@ async function fetchAllEbayListings(authToken: string, appId: string): Promise<E
     }
 
     const xml = await resp.text();
+    console.log(`eBay page ${page} response length: ${xml.length}, first 500 chars:`, xml.substring(0, 500));
     const items = parseEbayXml(xml);
+    console.log(`eBay page ${page}: parsed ${items.length} items`);
 
     if (!items.length) break;
     allItems.push(...items);
