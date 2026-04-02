@@ -12,41 +12,32 @@ Deno.serve(async (req) => {
   const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
   const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-  // Try OAuth refresh token first, fall back to Auth'n'Auth token
   const ebayAppId = Deno.env.get("EBAY_APP_ID");
   const ebayCertId = Deno.env.get("EBAY_CERT_ID");
-  const oauthRefreshToken = Deno.env.get("EBAY_OAUTH_REFRESH_TOKEN");
-  const authToken = Deno.env.get("EBAY_REFRESH_TOKEN");
 
-  if (!ebayAppId) {
+  if (!ebayAppId || !ebayCertId) {
     return new Response(
-      JSON.stringify({ error: "Missing EBAY_APP_ID" }),
+      JSON.stringify({ error: "Missing EBAY_APP_ID or EBAY_CERT_ID" }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }
 
   try {
-    // Determine which token to use
-    let userToken: string;
+    // Get OAuth refresh token from sync_secrets (saved by ebay-auth flow)
+    const { data: storedToken } = await supabase
+      .from("sync_secrets")
+      .select("value")
+      .eq("key", "ebay_refresh_token")
+      .single();
 
-    if (authToken) {
-      // Use Auth'n'Auth token directly with Trading API
-      userToken = authToken;
-    } else if (oauthRefreshToken && ebayCertId) {
-      // OAuth flow: exchange refresh token for access token
-      const { data: storedToken } = await supabase
-        .from("sync_secrets")
-        .select("value")
-        .eq("key", "ebay_refresh_token")
-        .single();
-      const tokenToUse = storedToken?.value || oauthRefreshToken;
-      userToken = await getOAuthAccessToken(ebayAppId, ebayCertId, tokenToUse, supabase);
-    } else {
+    if (!storedToken?.value) {
       return new Response(
-        JSON.stringify({ error: "No eBay token found. Set EBAY_REFRESH_TOKEN or EBAY_OAUTH_REFRESH_TOKEN." }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        JSON.stringify({ error: "No eBay refresh token found. Please authorize via the eBay Auth flow first." }),
+        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
+
+    const userToken = await getOAuthAccessToken(ebayAppId, ebayCertId, storedToken.value, supabase);
 
     // Fetch ALL eBay listings
     const listings = await fetchAllEbayListings(userToken, ebayAppId);
