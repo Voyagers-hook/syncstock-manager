@@ -86,9 +86,11 @@ export function useUpdateProduct() {
   return useMutation({
     mutationFn: async ({
       productId,
+      variantId,
       updates,
     }: {
       productId: string;
+      variantId?: string;
       updates: { cost_price?: number };
     }) => {
       const { error } = await supabase
@@ -96,6 +98,14 @@ export function useUpdateProduct() {
         .update(updates)
         .eq("id", productId);
       if (error) throw error;
+
+      // Mark variant as needing sync so the hourly job pushes changes
+      if (variantId) {
+        await supabase
+          .from("variants")
+          .update({ needs_sync: true, updated_at: new Date().toISOString() })
+          .eq("id", variantId);
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["products"] });
@@ -109,16 +119,24 @@ export function useUpdateChannelPrice() {
   return useMutation({
     mutationFn: async ({
       listingId,
+      variantId,
       price,
     }: {
       listingId: string;
+      variantId: string;
       price: number;
     }) => {
       const { error } = await supabase
         .from("channel_listings")
-        .update({ channel_price: price })
+        .update({ channel_price: price, updated_at: new Date().toISOString() })
         .eq("id", listingId);
       if (error) throw error;
+
+      // Mark variant as needing sync
+      await supabase
+        .from("variants")
+        .update({ needs_sync: true, updated_at: new Date().toISOString() })
+        .eq("id", variantId);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["products"] });
@@ -132,9 +150,11 @@ export function useUpdateInventory() {
   return useMutation({
     mutationFn: async ({
       inventoryId,
+      variantId,
       stock,
     }: {
       inventoryId: string;
+      variantId: string;
       stock: number;
     }) => {
       const { error } = await supabase
@@ -142,6 +162,12 @@ export function useUpdateInventory() {
         .update({ total_stock: stock })
         .eq("id", inventoryId);
       if (error) throw error;
+
+      // Mark variant as needing sync
+      await supabase
+        .from("variants")
+        .update({ needs_sync: true, updated_at: new Date().toISOString() })
+        .eq("id", variantId);
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["products"] });
