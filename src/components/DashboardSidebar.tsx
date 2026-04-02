@@ -1,5 +1,7 @@
 import { Package, LayoutDashboard, Link2, Trophy, Settings } from "lucide-react";
 import { useLocation, Link } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { supabase } from "@/integrations/supabase/client";
 
 const LOGO_URL = "https://voyagers-hook.github.io/images/logo%20trans.png";
 
@@ -13,6 +15,23 @@ const items = [
 
 const DashboardSidebar = () => {
   const location = useLocation();
+  const [channelCounts, setChannelCounts] = useState<Record<string, number>>({});
+
+  useEffect(() => {
+    async function load() {
+      const { data } = await supabase.from("channel_listings").select("channel");
+      if (!data) return;
+      const counts: Record<string, number> = {};
+      for (const row of data) {
+        counts[row.channel] = (counts[row.channel] ?? 0) + 1;
+      }
+      setChannelCounts(counts);
+    }
+    load();
+  }, []);
+
+  const ebayConnected = (channelCounts["ebay"] ?? 0) > 0;
+  const sqspConnected = (channelCounts["squarespace"] ?? 0) > 0;
 
   return (
     <aside className="fixed left-0 top-0 h-screen w-60 bg-sidebar flex flex-col z-30">
@@ -26,7 +45,6 @@ const DashboardSidebar = () => {
       <nav className="flex-1 px-3 py-4 space-y-1">
         {items.map((item) => {
           const isActive = location.pathname === item.path;
-          
           return (
             <Link
               key={item.label}
@@ -49,12 +67,16 @@ const DashboardSidebar = () => {
           Platforms
         </p>
         <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-sidebar-accent">
-          <div className="w-2 h-2 rounded-full bg-success" />
-          <span className="text-xs text-sidebar-foreground">eBay — Connected</span>
+          <div className={`w-2 h-2 rounded-full ${ebayConnected ? "bg-success" : "bg-warning"}`} />
+          <span className="text-xs text-sidebar-foreground">
+            eBay — {ebayConnected ? `${channelCounts["ebay"]} listings` : "No listings"}
+          </span>
         </div>
         <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-sidebar-accent">
-          <div className="w-2 h-2 rounded-full bg-warning" />
-          <span className="text-xs text-sidebar-foreground">Squarespace — Pending</span>
+          <div className={`w-2 h-2 rounded-full ${sqspConnected ? "bg-success" : "bg-warning"}`} />
+          <span className="text-xs text-sidebar-foreground">
+            Squarespace — {sqspConnected ? `${channelCounts["squarespace"]} listings` : "No listings"}
+          </span>
         </div>
       </div>
     </aside>
