@@ -1,65 +1,110 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
-import type { ProductWithDetails } from "@/lib/types";
+import { chunkArray, fetchAllPages } from "@/lib/supabase-pagination";
+import type {
+  ChannelListing,
+  Inventory,
+  Product,
+  ProductWithDetails,
+  Variant,
+} from "@/lib/types";
+
+const PAGE_SIZE = 1000;
+const FILTER_CHUNK_SIZE = 150;
+
+async function fetchRowsByIds<T>(
+  table: "variants" | "inventory" | "channel_listings",
+  column: "product_id" | "variant_id",
+  ids: string[],
+): Promise<T[]> {
+  if (!ids.length) return [];
+
+  const chunks = chunkArray(ids, FILTER_CHUNK_SIZE);
+  const results = await Promise.all(
+    chunks.map((chunk) =>
+      fetchAllPages<T>(
+        (from, to) =>
+          supabase
+            .from(table)
+            .select("*")
+            .in(column, chunk)
+            .range(from, to),
+        PAGE_SIZE,
+      ),
+    ),
+  );
+
+  return results.flat();
+}
 
 export function useProducts(search: string = "") {
   return useQuery({
     queryKey: ["products", search],
     queryFn: async (): Promise<ProductWithDetails[]> => {
-      // Fetch products
-      let query = supabase
-        .from("products")
-        .select("*")
-        .eq("active", true)
-        .order("name");
+      const products = await fetchAllPages<Product>((from, to) => {
+        let query = supabase
+          .from("products")
+          .select("*")
+          .eq("active", true)
+          .order("name");
 
-      if (search) {
-        query = query.or(`name.ilike.%${search}%,sku.ilike.%${search}%`);
-      }
+        if (search) {
+          query = query.or(`name.ilike.%${search}%,sku.ilike.%${search}%`);
+        }
 
-      const { data: products, error: pErr } = await query;
-      if (pErr) throw pErr;
-      if (!products?.length) return [];
+        return query.range(from, to);
+      }, PAGE_SIZE);
 
-      const productIds = products.map((p) => p.id);
+      if (!products.length) return [];
 
-      // Fetch related data in parallel
-      const [variantsRes, inventoryRes, listingsRes] = await Promise.all([
-        supabase.from("variants").select("*").in("product_id", productIds),
-        supabase.from("inventory").select("*").in("product_id", productIds),
-        supabase.from("channel_listings").select("*"),
+      const productIds = products.map((product) => product.id);
+      const [variants, inventory] = await Promise.all([
+        fetchRowsByIds<Variant>("variants", "product_id", productIds),
+        fetchRowsByIds<Inventory>("inventory", "product_id", productIds),
       ]);
 
-      const variants = variantsRes.data ?? [];
-      const inventory = inventoryRes.data ?? [];
-      const listings = listingsRes.data ?? [];
-
-      // Build variant→listings lookup
-      const variantIds = variants.map((v) => v.id);
-      const relevantListings = listings.filter((l) =>
-        variantIds.includes(l.variant_id)
+      const listings = await fetchRowsByIds<ChannelListing>(
+        "channel_listings",
+        "variant_id",
+        variants.map((variant) => variant.id),
       );
 
+      const variantsByProduct = new Map<string, Variant[]>();
+      for (const variant of variants) {
+        const bucket = variantsByProduct.get(variant.product_id) ?? [];
+        bucket.push(variant);
+        variantsByProduct.set(variant.product_id, bucket);
+      }
+
+      const inventoryByProduct = new Map<string, Inventory[]>();
+      for (const stockRow of inventory) {
+        const bucket = inventoryByProduct.get(stockRow.product_id) ?? [];
+        bucket.push(stockRow);
+        inventoryByProduct.set(stockRow.product_id, bucket);
+      }
+
+      const listingsByVariant = new Map<string, ChannelListing[]>();
+      for (const listing of listings) {
+        const bucket = listingsByVariant.get(listing.variant_id) ?? [];
+        bucket.push(listing);
+        listingsByVariant.set(listing.variant_id, bucket);
+      }
+
       return products.map((product) => {
-        const prodVariants = variants.filter(
-          (v) => v.product_id === product.id
-        );
-        const prodInventory = inventory.filter(
-          (i) => i.product_id === product.id
-        );
-        const prodVariantIds = prodVariants.map((v) => v.id);
-        const prodListings = relevantListings.filter((l) =>
-          prodVariantIds.includes(l.variant_id)
+        const productVariants = variantsByProduct.get(product.id) ?? [];
+        const productInventory = inventoryByProduct.get(product.id) ?? [];
+        const productListings = productVariants.flatMap(
+          (variant) => listingsByVariant.get(variant.id) ?? [],
         );
 
-        const totalStock = prodInventory.reduce(
-          (sum, i) => sum + (i.total_stock ?? 0),
-          0
+        const totalStock = productInventory.reduce(
+          (sum, stockRow) => sum + (stockRow.total_stock ?? 0),
+          0,
         );
 
-        const ebayListing = prodListings.find((l) => l.channel === "ebay");
-        const sqspListing = prodListings.find(
-          (l) => l.channel === "squarespace"
+        const ebayListing = productListings.find((listing) => listing.channel === "ebay");
+        const squarespaceListing = productListings.find(
+          (listing) => listing.channel === "squarespace",
         );
 
         return {
@@ -70,10 +115,10 @@ export function useProducts(search: string = "") {
           status: product.status,
           total_stock: totalStock,
           ebay_price: ebayListing?.channel_price ?? null,
-          squarespace_price: sqspListing?.channel_price ?? null,
-          variants: prodVariants,
-          inventory: prodInventory,
-          channel_listings: prodListings,
+          squarespace_price: squarespaceListing?.channel_price ?? null,
+          variants: productVariants,
+          inventory: productInventory,
+          channel_listings: productListings,
         };
       });
     },
@@ -99,7 +144,6 @@ export function useUpdateProduct() {
         .eq("id", productId);
       if (error) throw error;
 
-      // Mark variant as needing sync so the hourly job pushes changes
       if (variantId) {
         await supabase
           .from("variants")
@@ -132,7 +176,6 @@ export function useUpdateChannelPrice() {
         .eq("id", listingId);
       if (error) throw error;
 
-      // Mark variant as needing sync
       await supabase
         .from("variants")
         .update({ needs_sync: true, updated_at: new Date().toISOString() })
@@ -163,7 +206,6 @@ export function useUpdateInventory() {
         .eq("id", inventoryId);
       if (error) throw error;
 
-      // Mark variant as needing sync
       await supabase
         .from("variants")
         .update({ needs_sync: true, updated_at: new Date().toISOString() })
