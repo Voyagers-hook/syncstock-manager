@@ -5,82 +5,75 @@ import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { useQueryClient } from "@tanstack/react-query";
 
-const GITHUB_OWNER = "Voyagers-hook";
-const GITHUB_REPO = "syncstock-manager";
-const QUICK_SYNC_WORKFLOW = "sync-quick.yml";
-const COOLDOWN_MS = 30 * 60 * 1000; // 30 minutes
-
 export function useQuickSync() {
   const [syncing, setSyncing] = useState(false);
-  const [lastSyncAt, setLastSyncAt] = useState<number | null>(() => {
-    const stored = localStorage.getItem("lastQuickSync");
-    return stored ? Number(stored) : null;
-  });
   const queryClient = useQueryClient();
 
-  const canSync = !syncing && (!lastSyncAt || Date.now() - lastSyncAt > COOLDOWN_MS);
-  const cooldownRemaining = lastSyncAt ? Math.max(0, COOLDOWN_MS - (Date.now() - lastSyncAt)) : 0;
-
-  const triggerSync = useCallback(async () => {
-    if (!canSync) {
-      const mins = Math.ceil(cooldownRemaining / 60000);
-      toast.info(`Quick Sync was run recently. Wait ${mins} min before syncing again.`);
-      return;
-    }
-
+  const triggerSync = useCallback(async (mode: "quick" | "full" = "quick") => {
+    if (syncing) return;
     setSyncing(true);
 
+    const label = mode === "full" ? "Full Catalogue Reset" : "Quick Sync";
+
     try {
-      // Record the sync in sync_log
+      // Insert a sync_log row so the external runner picks it up
       const now = new Date().toISOString();
       await supabase
         .from("sync_log")
-        .insert({ sync_type: "quick", status: "triggered", started_at: now });
+        .insert({ sync_type: mode, status: "started", started_at: now, source: "dashboard" });
 
-      // Try to trigger GitHub Actions workflow
-      const token = localStorage.getItem("github_pat");
-      if (token) {
-        const res = await fetch(
-          `https://api.github.com/repos/${GITHUB_OWNER}/${GITHUB_REPO}/actions/workflows/${QUICK_SYNC_WORKFLOW}/dispatches`,
-          {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${token}`,
-              Accept: "application/vnd.github.v3+json",
-            },
-            body: JSON.stringify({ ref: "main" }),
-          }
-        );
-        if (res.ok || res.status === 204) {
-          toast.success("Quick Sync triggered! Changes will appear in 1-2 minutes.");
-        } else {
-          toast.info("Sync flagged — products marked for next sync cycle.");
-        }
-      } else {
-        // No GitHub token — just flag all variants for sync
-        await supabase
-          .from("variants")
-          .update({ needs_sync: true, updated_at: new Date().toISOString() })
-          .eq("needs_sync", false);
-        toast.success("All products flagged for sync on next cycle.");
-      }
+      // Flag all variants for sync so the runner processes everything
+      await supabase
+        .from("variants")
+        .update({ needs_sync: true, updated_at: new Date().toISOString() })
+        .neq("needs_sync", true);
 
-      const timestamp = Date.now();
-      setLastSyncAt(timestamp);
-      localStorage.setItem("lastQuickSync", String(timestamp));
+      toast.success(`${label} requested — syncing now.`);
 
-      // Refresh the UI data
-      setTimeout(() => {
-        queryClient.invalidateQueries({ queryKey: ["products"] });
-      }, 3000);
-    } catch (err) {
-      toast.error("Sync failed — check your connection.");
+      // Poll for completion
+      pollForCompletion(mode, now, queryClient);
+    } catch {
+      toast.error(`${label} failed — check your connection.`);
     } finally {
       setSyncing(false);
     }
-  }, [canSync, cooldownRemaining, queryClient]);
+  }, [syncing, queryClient]);
 
-  return { triggerSync, syncing, canSync, cooldownRemaining };
+  return { triggerSync, syncing };
+}
+
+async function pollForCompletion(
+  mode: string,
+  startedAfter: string,
+  queryClient: ReturnType<typeof useQueryClient>,
+) {
+  for (let i = 0; i < 30; i++) {
+    await new Promise((r) => setTimeout(r, 10000)); // every 10s
+
+    const { data } = await supabase
+      .from("sync_log")
+      .select("status, details, error_message")
+      .eq("sync_type", mode)
+      .gte("started_at", startedAfter)
+      .order("started_at", { ascending: false })
+      .limit(1);
+
+    const row = data?.[0];
+    if (!row) continue;
+
+    if (row.status === "completed") {
+      const details = row.details ? JSON.parse(row.details) : {};
+      toast.success(`Sync complete — ${details.items_synced ?? "all"} items synced.`);
+      queryClient.invalidateQueries({ queryKey: ["products"] });
+      return;
+    }
+    if (row.status === "failed") {
+      toast.error(`Sync failed: ${row.error_message ?? "unknown error"}`);
+      return;
+    }
+  }
+  // After 5 minutes of polling, refresh anyway
+  queryClient.invalidateQueries({ queryKey: ["products"] });
 }
 
 interface QuickSyncButtonProps {
@@ -89,10 +82,10 @@ interface QuickSyncButtonProps {
 }
 
 export const QuickSyncButton = ({ variant = "outline", size = "sm" }: QuickSyncButtonProps) => {
-  const { triggerSync, syncing, canSync } = useQuickSync();
+  const { triggerSync, syncing } = useQuickSync();
 
   return (
-    <Button variant={variant} size={size} onClick={triggerSync} disabled={syncing}>
+    <Button variant={variant} size={size} onClick={() => triggerSync("quick")} disabled={syncing}>
       {syncing ? (
         <Loader2 className="w-4 h-4 mr-2 animate-spin" />
       ) : (
