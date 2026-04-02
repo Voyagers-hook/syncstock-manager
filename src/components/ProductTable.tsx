@@ -1,8 +1,8 @@
 import { useState, useMemo } from "react";
-import { ChevronDown, ChevronRight, Loader2, Search } from "lucide-react";
+import { ChevronDown, ChevronRight, Loader2, Search, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
-import { useProducts, useUpdateProduct, useUpdateChannelPrice, useUpdateInventory } from "@/hooks/use-products";
+import { useProducts, useUpdateProduct, useUpdateChannelPrice, useUpdateInventory, useDeleteProduct } from "@/hooks/use-products";
 import type { ProductWithDetails } from "@/lib/types";
 import { toast } from "sonner";
 import InlineEditCell from "./InlineEditCell";
@@ -23,6 +23,15 @@ const ProductTable = () => {
   const updateProduct = useUpdateProduct();
   const updateChannelPrice = useUpdateChannelPrice();
   const updateInventory = useUpdateInventory();
+  const deleteProduct = useDeleteProduct();
+
+  const handleDelete = (p: ProductWithDetails) => {
+    if (!confirm(`Delete "${p.name}"? This cannot be undone.`)) return;
+    deleteProduct.mutate(p.id, {
+      onSuccess: () => toast.success(`Deleted ${p.name}`),
+      onError: () => toast.error("Failed to delete product"),
+    });
+  };
 
   const handleSaveStock = (p: ProductWithDetails, newStock: number) => {
     if (!p.inventory[0] || !p.variants[0]) return;
@@ -120,6 +129,7 @@ const ProductTable = () => {
               <th className="text-right text-xs font-medium text-muted-foreground uppercase tracking-wider px-5 py-3">Cost</th>
               <th className="text-right text-xs font-medium text-muted-foreground uppercase tracking-wider px-5 py-3">Margin</th>
               <th className="text-center text-xs font-medium text-muted-foreground uppercase tracking-wider px-5 py-3">Status</th>
+              <th className="text-center text-xs font-medium text-muted-foreground uppercase tracking-wider px-2 py-3 w-10" />
             </tr>
           </thead>
           <tbody>
@@ -176,10 +186,19 @@ const ProductTable = () => {
                       <span className="text-sm font-medium text-success">{margin}{margin !== "—" ? "%" : ""}</span>
                     </td>
                     <td className="px-5 py-3.5 text-center">{getStockBadge(product.total_stock)}</td>
+                    <td className="px-2 py-3.5 text-center">
+                      <button
+                        onClick={() => handleDelete(product)}
+                        className="text-muted-foreground hover:text-destructive transition-colors"
+                        title="Delete product"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    </td>
                   </tr>
                   {expandedId === product.id && product.variants.length > 0 && (
                     <tr key={`${product.id}-exp`} className="bg-muted/20">
-                      <td colSpan={9} className="px-12 py-3">
+                      <td colSpan={10} className="px-12 py-3">
                         <div className="flex flex-wrap gap-2">
                           {product.variants.map((v) => (
                             <Badge key={v.id} variant="outline" className="text-xs">

@@ -212,6 +212,33 @@ export function useUpdateChannelPrice() {
   });
 }
 
+export function useDeleteProduct() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (productId: string) => {
+      // Delete related rows first (no FK constraints but clean up)
+      const { data: variants } = await supabase
+        .from("variants")
+        .select("id")
+        .eq("product_id", productId);
+
+      if (variants?.length) {
+        const variantIds = variants.map((v) => v.id);
+        await supabase.from("channel_listings").delete().in("variant_id", variantIds);
+        await supabase.from("variants").delete().eq("product_id", productId);
+      }
+
+      await supabase.from("inventory").delete().eq("product_id", productId);
+      const { error } = await supabase.from("products").delete().eq("id", productId);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["products"] });
+    },
+  });
+}
+
 export function useUpdateInventory() {
   const queryClient = useQueryClient();
 
