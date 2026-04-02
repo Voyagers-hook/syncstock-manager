@@ -155,7 +155,7 @@ async function fetchAllEbayListings(authToken: string, appId: string): Promise<E
     const xmlBody = `<?xml version="1.0" encoding="utf-8"?>
 <GetMyeBaySellingRequest xmlns="urn:ebay:apis:eBLBaseComponents">
   <RequesterCredentials>
-    <eBayAuthToken>${accessToken}</eBayAuthToken>
+    <eBayAuthToken>${authToken}</eBayAuthToken>
   </RequesterCredentials>
   <ActiveList>
     <Sort>ItemID</Sort>
