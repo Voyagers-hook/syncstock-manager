@@ -90,37 +90,62 @@ export function useProducts() {
         listingsByVariant.set(listing.variant_id, bucket);
       }
 
-      return products.map((product) => {
-        const productVariants = variantsByProduct.get(product.id) ?? [];
-        const productInventory = inventoryByProduct.get(product.id) ?? [];
-        const productListings = productVariants.flatMap(
-          (variant) => listingsByVariant.get(variant.id) ?? [],
-        );
+      const rows = products
+        .map((product) => {
+          const productVariants = variantsByProduct.get(product.id) ?? [];
+          const productInventory = inventoryByProduct.get(product.id) ?? [];
+          const productListings = productVariants.flatMap(
+            (variant) => listingsByVariant.get(variant.id) ?? [],
+          );
 
-        const totalStock = productInventory.reduce(
-          (sum, stockRow) => sum + (stockRow.total_stock ?? 0),
-          0,
-        );
+          const totalStock = productInventory.reduce(
+            (sum, stockRow) => sum + (stockRow.total_stock ?? 0),
+            0,
+          );
 
-        const ebayListing = productListings.find((listing) => listing.channel === "ebay");
-        const squarespaceListing = productListings.find(
-          (listing) => listing.channel === "squarespace",
-        );
+          const ebayListing = productListings.find((listing) => listing.channel === "ebay");
+          const squarespaceListing = productListings.find(
+            (listing) => listing.channel === "squarespace",
+          );
 
-        return {
-          id: product.id,
-          name: product.name,
-          sku: product.sku,
-          cost_price: product.cost_price,
-          status: product.status,
-          total_stock: totalStock,
-          ebay_price: ebayListing?.channel_price ?? null,
-          squarespace_price: squarespaceListing?.channel_price ?? null,
-          variants: productVariants,
-          inventory: productInventory,
-          channel_listings: productListings,
-        };
-      });
+          return {
+            id: product.id,
+            name: product.name,
+            sku: product.sku,
+            cost_price: product.cost_price,
+            status: product.status,
+            total_stock: totalStock,
+            ebay_price: ebayListing?.channel_price ?? null,
+            squarespace_price: squarespaceListing?.channel_price ?? null,
+            variants: productVariants,
+            inventory: productInventory,
+            channel_listings: productListings,
+          };
+        })
+        .filter((product) => product.name.trim().length > 0);
+
+      const scoreProduct = (product: ProductWithDetails) => {
+        const listingScore = product.channel_listings.length * 100;
+        const priceScore = (product.ebay_price != null ? 10 : 0) + (product.squarespace_price != null ? 10 : 0);
+        const variantScore = product.variants.length * 5;
+        const stockScore = product.total_stock > 0 ? 1 : 0;
+        return listingScore + priceScore + variantScore + stockScore;
+      };
+
+      const dedupedProducts = new Map<string, ProductWithDetails>();
+
+      for (const product of rows) {
+        const key = product.name.trim().toLowerCase();
+        const existing = dedupedProducts.get(key);
+
+        if (!existing || scoreProduct(product) > scoreProduct(existing)) {
+          dedupedProducts.set(key, product);
+        }
+      }
+
+      return Array.from(dedupedProducts.values()).sort((a, b) =>
+        a.name.localeCompare(b.name),
+      );
     },
   });
 }
