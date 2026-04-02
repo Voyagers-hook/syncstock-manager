@@ -83,7 +83,7 @@ Deno.serve(async (req) => {
   }
 });
 
-async function getAccessToken(
+async function getOAuthAccessToken(
   appId: string,
   certId: string,
   refreshToken: string,
@@ -106,7 +106,7 @@ async function getAccessToken(
 
   if (!resp.ok) {
     const body = await resp.text();
-    throw new Error(`eBay token exchange failed [${resp.status}]: ${body}`);
+    throw new Error(`eBay OAuth token exchange failed [${resp.status}]: ${body}`);
   }
 
   const data = await resp.json();
