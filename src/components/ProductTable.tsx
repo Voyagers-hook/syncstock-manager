@@ -138,8 +138,8 @@ const ProductTable = () => {
                     <td className="px-5 py-3.5">
                       <span className="text-xs font-mono text-muted-foreground">{product.sku ?? "—"}</span>
                     </td>
-                    <td className="px-5 py-3.5">
-                      <span className="text-sm font-medium text-foreground truncate max-w-[250px] block">{product.name}</span>
+                    <td className="px-5 py-3.5 min-w-[350px]">
+                      <span className="text-sm font-medium text-foreground">{product.name}</span>
                     </td>
                     <td className="px-5 py-3.5 text-center">
                       <InlineEditCell
