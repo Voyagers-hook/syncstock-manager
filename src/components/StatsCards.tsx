@@ -1,15 +1,29 @@
 import { Package, AlertTriangle, TrendingUp, RefreshCw } from "lucide-react";
-import { mockProducts } from "@/lib/mock-data";
+import { useProducts } from "@/hooks/use-products";
 
 const StatsCards = () => {
-  const totalProducts = mockProducts.length;
-  const outOfStock = mockProducts.filter((p) => p.stock === 0).length;
-  const totalValue = mockProducts.reduce((acc, p) => acc + p.stock * p.costPrice, 0);
+  const { data: products = [] } = useProducts();
+
+  const totalProducts = products.length;
+  const outOfStock = products.filter((p) => p.total_stock === 0).length;
+  const totalValue = products.reduce(
+    (acc, p) => acc + p.total_stock * (p.cost_price ?? 0),
+    0
+  );
+
+  const productsWithMargin = products.filter((p) => {
+    const prices = [p.ebay_price, p.squarespace_price].filter(Boolean) as number[];
+    return prices.length > 0 && (p.cost_price ?? 0) > 0;
+  });
+
   const avgMargin =
-    mockProducts.reduce((acc, p) => {
-      const avgSell = (p.ebayPrice + p.squarespacePrice) / 2;
-      return acc + ((avgSell - p.costPrice) / avgSell) * 100;
-    }, 0) / totalProducts;
+    productsWithMargin.length > 0
+      ? productsWithMargin.reduce((acc, p) => {
+          const prices = [p.ebay_price, p.squarespace_price].filter(Boolean) as number[];
+          const avgSell = prices.reduce((a, b) => a + b, 0) / prices.length;
+          return acc + ((avgSell - (p.cost_price ?? 0)) / avgSell) * 100;
+        }, 0) / productsWithMargin.length
+      : 0;
 
   const cards = [
     {

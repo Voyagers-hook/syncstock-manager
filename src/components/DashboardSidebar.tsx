@@ -14,16 +14,16 @@ const items: SidebarItem[] = [
   { icon: Settings, label: "Settings" },
 ];
 
+const LOGO_URL = "https://voyagers-hook.github.io/images/logo%20trans.png";
+
 const DashboardSidebar = () => {
   return (
     <aside className="fixed left-0 top-0 h-screen w-60 bg-sidebar flex flex-col z-30">
       {/* Logo */}
-      <div className="flex items-center gap-2.5 px-5 py-6 border-b border-sidebar-border">
-        <div className="w-8 h-8 rounded-lg bg-sidebar-primary flex items-center justify-center">
-          <Package className="w-4 h-4 text-sidebar-primary-foreground" />
-        </div>
-        <span className="text-sidebar-primary-foreground font-semibold text-lg tracking-tight">
-          StockSync
+      <div className="flex items-center gap-3 px-5 py-5 border-b border-sidebar-border">
+        <img src={LOGO_URL} alt="Voyager's Hook" className="w-10 h-10 object-contain" />
+        <span className="text-sidebar-primary-foreground font-semibold text-base tracking-tight leading-tight">
+          Voyager's Hook
         </span>
       </div>
 
