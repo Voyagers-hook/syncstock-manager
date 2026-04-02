@@ -1,7 +1,11 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
+import { chunkArray, fetchAllPages } from "@/lib/supabase-pagination";
 import { toast } from "sonner";
+
+const PAGE_SIZE = 1000;
+const CHUNK_SIZE = 150;
 
 export interface UnmergedProduct {
   id: string;
@@ -23,64 +27,108 @@ export interface MergeAction {
   timestamp: string;
 }
 
+async function fetchByIds<T>(
+  table: string,
+  column: string,
+  ids: string[],
+  select: string = "*",
+): Promise<T[]> {
+  if (!ids.length) return [];
+  const chunks = chunkArray(ids, CHUNK_SIZE);
+  const results = await Promise.all(
+    chunks.map((chunk) =>
+      fetchAllPages<T>(async (from, to) => {
+        const { data, error } = await supabase
+          .from(table)
+          .select(select)
+          .in(column, chunk)
+          .range(from, to);
+        return { data, error };
+      }, PAGE_SIZE),
+    ),
+  );
+  return results.flat();
+}
+
 export function useUnmergedProducts() {
   return useQuery({
     queryKey: ["unmerged-products"],
     queryFn: async (): Promise<UnmergedProduct[]> => {
-      // Get all products with their channel listings
-      const { data: products, error: pErr } = await supabase
-        .from("products")
-        .select("id, name, sku")
-        .eq("active", true)
-        .order("name");
-      if (pErr) throw pErr;
-      if (!products?.length) return [];
+      // Fetch all active products with pagination
+      const products = await fetchAllPages<{ id: string; name: string; sku: string | null }>(
+        async (from, to) => {
+          const { data, error } = await supabase
+            .from("products")
+            .select("id, name, sku")
+            .eq("active", true)
+            .order("name")
+            .range(from, to);
+          return { data, error };
+        },
+        PAGE_SIZE,
+      );
+      if (!products.length) return [];
 
       const productIds = products.map((p) => p.id);
 
-      const [varRes, listRes] = await Promise.all([
-        supabase.from("variants").select("id, product_id").in("product_id", productIds),
-        supabase.from("channel_listings").select("id, variant_id, channel, channel_price, channel_product_id"),
-      ]);
+      // Fetch variants and listings with chunked queries
+      const variants = await fetchByIds<{ id: string; product_id: string }>(
+        "variants", "product_id", productIds, "id, product_id"
+      );
 
-      const variants = varRes.data ?? [];
-      const listings = listRes.data ?? [];
+      const variantIds = variants.map((v) => v.id);
+      const listings = await fetchByIds<{
+        id: string; variant_id: string; channel: string;
+        channel_price: number | null; channel_product_id: string | null;
+      }>(
+        "channel_listings", "variant_id", variantIds,
+        "id, variant_id, channel, channel_price, channel_product_id"
+      );
 
-      // Find products that only appear on ONE channel
-      const productChannels = new Map<string, Set<string>>();
-      const productListingInfo = new Map<string, UnmergedProduct[]>();
+      // Build lookup maps
+      const variantsByProduct = new Map<string, typeof variants>();
+      for (const v of variants) {
+        const arr = variantsByProduct.get(v.product_id) ?? [];
+        arr.push(v);
+        variantsByProduct.set(v.product_id, arr);
+      }
 
+      const listingsByVariant = new Map<string, typeof listings>();
+      for (const l of listings) {
+        const arr = listingsByVariant.get(l.variant_id) ?? [];
+        arr.push(l);
+        listingsByVariant.set(l.variant_id, arr);
+      }
+
+      // Find products on exactly ONE channel
+      const result: UnmergedProduct[] = [];
       for (const product of products) {
-        const prodVariants = variants.filter((v) => v.product_id === product.id);
-        const prodVariantIds = prodVariants.map((v) => v.id);
-        const prodListings = listings.filter((l) => prodVariantIds.includes(l.variant_id));
+        const prodVariants = variantsByProduct.get(product.id) ?? [];
+        const prodListings = prodVariants.flatMap(
+          (v) => listingsByVariant.get(v.id) ?? []
+        );
 
         const channels = new Set(prodListings.map((l) => l.channel));
-        productChannels.set(product.id, channels);
-
-        // Only include products on exactly one channel (candidates for merging)
         if (channels.size === 1) {
           const channel = [...channels][0] as "ebay" | "squarespace";
           const listing = prodListings[0];
-          if (listing && prodVariants[0]) {
-            if (!productListingInfo.has(product.id)) {
-              productListingInfo.set(product.id, []);
-            }
-            productListingInfo.get(product.id)!.push({
+          const variant = prodVariants[0];
+          if (listing && variant) {
+            result.push({
               id: product.id,
               name: product.name,
               sku: product.sku,
               channel,
               channel_price: listing.channel_price,
               channel_product_id: listing.channel_product_id,
-              variant_id: prodVariants[0].id,
+              variant_id: variant.id,
               listing_id: listing.id,
             });
           }
         }
       }
 
-      return Array.from(productListingInfo.values()).flat();
+      return result;
     },
   });
 }
@@ -96,7 +144,6 @@ export function useMergeProducts() {
       keepId: string;
       removeId: string;
     }) => {
-      // Move all variants from removeId to keepId
       const { data: movedVariants } = await supabase
         .from("variants")
         .select("id")
@@ -104,14 +151,12 @@ export function useMergeProducts() {
 
       const variantIds = (movedVariants ?? []).map((v) => v.id);
 
-      // Move variants
       const { error: vErr } = await supabase
         .from("variants")
         .update({ product_id: keepId, updated_at: new Date().toISOString() })
         .eq("product_id", removeId);
       if (vErr) throw vErr;
 
-      // Move inventory
       const { data: movedInv } = await supabase
         .from("inventory")
         .select("id")
@@ -123,19 +168,17 @@ export function useMergeProducts() {
         .eq("product_id", removeId);
       if (iErr) throw iErr;
 
-      // Deactivate the removed product
       const { error: dErr } = await supabase
         .from("products")
         .update({ active: false, updated_at: new Date().toISOString() })
         .eq("id", removeId);
       if (dErr) throw dErr;
 
-      // Store undo info in localStorage
       const action: MergeAction = {
         kept_product_id: keepId,
         removed_product_id: removeId,
         moved_variant_ids: variantIds,
-        moved_listing_ids: [], // listings follow variants
+        moved_listing_ids: [],
         moved_inventory_ids: (movedInv ?? []).map((i) => i.id),
         timestamp: new Date().toISOString(),
       };
@@ -168,7 +211,6 @@ export function useUndoMerge() {
       const last = history.pop();
       if (!last) throw new Error("No merge to undo");
 
-      // Move variants back
       if (last.moved_variant_ids.length) {
         await supabase
           .from("variants")
@@ -179,7 +221,6 @@ export function useUndoMerge() {
           .in("id", last.moved_variant_ids);
       }
 
-      // Move inventory back
       if (last.moved_inventory_ids.length) {
         await supabase
           .from("inventory")
@@ -187,7 +228,6 @@ export function useUndoMerge() {
           .in("id", last.moved_inventory_ids);
       }
 
-      // Reactivate the removed product
       await supabase
         .from("products")
         .update({ active: true, updated_at: new Date().toISOString() })
