@@ -164,7 +164,7 @@ async function upsertProducts(supabase: any, newProducts: SqProduct[], totalFetc
     }
 
     for (const sqVariant of sqProduct.variants) {
-      const price = parseFloat(sqVariant.pricing?.basePrice?.value || "0");
+      const price = parseFloat(sqVariant.pricing?.basePrice?.value || "0") / 100;
       const attrs = sqVariant.attributes || {};
       const optionValues = Object.values(attrs);
       const variantSku = sqVariant.sku || sqVariant.id;
