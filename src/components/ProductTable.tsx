@@ -121,6 +121,7 @@ const ProductTable = () => {
               <th className="text-right text-xs font-medium text-muted-foreground uppercase tracking-wider px-5 py-3">Margin</th>
               <th className="text-center text-xs font-medium text-muted-foreground uppercase tracking-wider px-5 py-3">Status</th>
               <th className="text-center text-xs font-medium text-muted-foreground uppercase tracking-wider px-2 py-3 w-10" />
+            </tr>
           </thead>
           <tbody>
             {products.map((product) => {
