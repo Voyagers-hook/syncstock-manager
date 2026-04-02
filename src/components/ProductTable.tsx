@@ -198,14 +198,95 @@ const ProductTable = () => {
                   </tr>
                   {expandedId === product.id && product.variants.length > 0 && (
                     <tr key={`${product.id}-exp`} className="bg-muted/20">
-                      <td colSpan={10} className="px-12 py-3">
-                        <div className="flex flex-wrap gap-2">
-                          {product.variants.map((v) => (
-                            <Badge key={v.id} variant="outline" className="text-xs">
-                              {v.option1}{v.option2 ? ` / ${v.option2}` : ""} — SKU: {v.internal_sku ?? "—"}
-                            </Badge>
-                          ))}
-                        </div>
+                      <td colSpan={10} className="px-5 py-3">
+                        <table className="w-full">
+                          <thead>
+                            <tr className="text-xs text-muted-foreground uppercase">
+                              <th className="text-left px-3 py-1">Variant</th>
+                              <th className="text-left px-3 py-1">SKU</th>
+                              <th className="text-center px-3 py-1">Stock</th>
+                              <th className="text-right px-3 py-1">eBay</th>
+                              <th className="text-right px-3 py-1">Sqsp</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {product.variants.map((v) => {
+                              const vInventory = product.inventory.find((inv) => inv.variant_id === v.id);
+                              const vEbay = product.channel_listings.find((l) => l.variant_id === v.id && l.channel === "ebay");
+                              const vSqsp = product.channel_listings.find((l) => l.variant_id === v.id && l.channel === "squarespace");
+                              const vStock = vInventory?.total_stock ?? 0;
+                              return (
+                                <tr key={v.id} className="border-t border-border/50">
+                                  <td className="px-3 py-2 text-sm text-foreground">
+                                    {v.option1}{v.option2 ? ` / ${v.option2}` : ""}
+                                  </td>
+                                  <td className="px-3 py-2 text-xs font-mono text-muted-foreground">
+                                    {v.internal_sku ?? "—"}
+                                  </td>
+                                  <td className="px-3 py-2 text-center">
+                                    {vInventory ? (
+                                      <InlineEditCell
+                                        value={vStock}
+                                        prefix=""
+                                        align="center"
+                                        className="font-semibold text-foreground"
+                                        onSave={(val) =>
+                                          updateInventory.mutate(
+                                            { inventoryId: vInventory.id, variantId: v.id, stock: val },
+                                            {
+                                              onSuccess: () => toast.success(`Stock updated to ${val}`),
+                                              onError: () => toast.error("Failed to update stock"),
+                                            }
+                                          )
+                                        }
+                                      />
+                                    ) : (
+                                      <span className="text-xs text-muted-foreground">—</span>
+                                    )}
+                                  </td>
+                                  <td className="px-3 py-2 text-right">
+                                    {vEbay ? (
+                                      <InlineEditCell
+                                        value={vEbay.channel_price}
+                                        prefix="£"
+                                        onSave={(val) =>
+                                          updateChannelPrice.mutate(
+                                            { listingId: vEbay.id, variantId: v.id, price: val },
+                                            {
+                                              onSuccess: () => toast.success(`eBay price updated to £${val.toFixed(2)}`),
+                                              onError: () => toast.error("Failed to update price"),
+                                            }
+                                          )
+                                        }
+                                      />
+                                    ) : (
+                                      <span className="text-xs text-muted-foreground">—</span>
+                                    )}
+                                  </td>
+                                  <td className="px-3 py-2 text-right">
+                                    {vSqsp ? (
+                                      <InlineEditCell
+                                        value={vSqsp.channel_price}
+                                        prefix="£"
+                                        onSave={(val) =>
+                                          updateChannelPrice.mutate(
+                                            { listingId: vSqsp.id, variantId: v.id, price: val },
+                                            {
+                                              onSuccess: () => toast.success(`Sqsp price updated to £${val.toFixed(2)}`),
+                                              onError: () => toast.error("Failed to update price"),
+                                            }
+                                          )
+                                        }
+                                      />
+                                    ) : (
+                                      <span className="text-xs text-muted-foreground">—</span>
+                                    )}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
                       </td>
                     </tr>
                   )}
