@@ -257,17 +257,26 @@ async function bulkInsert(supabase: ReturnType<typeof createClient>, items: Ebay
     return true;
   });
 
-  // Insert ONE AT A TIME to get per-row errors and IDs
+  // Pre-load ALL existing variants so re-runs can match
   const variantByISku = new Map<string, string>();
   const insertErrors: string[] = [];
+  {
+    const allISkus = dedupedVarRows.map(r => r.internal_sku);
+    const LOOKUP_CHUNK = 150;
+    for (let i = 0; i < allISkus.length; i += LOOKUP_CHUNK) {
+      const chunk = allISkus.slice(i, i + LOOKUP_CHUNK);
+      const { data: existing } = await supabase
+        .from("variants").select("id, internal_sku").in("internal_sku", chunk);
+      for (const v of (existing ?? [])) variantByISku.set(v.internal_sku, v.id);
+    }
+  }
+  // Insert only genuinely new variants
   for (const varRow of dedupedVarRows) {
+    if (variantByISku.has(varRow.internal_sku)) continue;
     const { data: inserted, error: insErr } = await supabase
       .from("variants").insert(varRow).select("id, internal_sku");
     if (insErr) {
       insertErrors.push(`${varRow.internal_sku}: ${insErr.message}`);
-      // Try to get existing variant with this sku
-      const { data: existing } = await supabase.from("variants").select("id, internal_sku").eq("internal_sku", varRow.internal_sku).maybeSingle();
-      if (existing) variantByISku.set(existing.internal_sku, existing.id);
     } else if (inserted && inserted.length > 0) {
       variantByISku.set(inserted[0].internal_sku, inserted[0].id);
     }
@@ -318,11 +327,25 @@ async function bulkInsert(supabase: ReturnType<typeof createClient>, items: Ebay
     }
   }
 
-  // Inventory: upsert by variant_id (this constraint definitely exists — it's the PK-related FK)
-  // Actually we just insert since we cleared old data first
-  const CHUNK = 100;
-  for (let i = 0; i < invRows.length; i += CHUNK) {
-    await supabase.from("inventory").upsert(invRows.slice(i, i + CHUNK), { onConflict: "variant_id", ignoreDuplicates: false });
+  // Inventory: update existing rows, insert new ones
+  const CHUNK = 50;
+  // First get all existing inventory variant_ids
+  const existingInvSet = new Set<string>();
+  for (let i = 0; i < invRows.length; i += 150) {
+    const chunk = invRows.slice(i, i + 150).map(r => r.variant_id);
+    const { data: existing } = await supabase.from("inventory").select("variant_id").in("variant_id", chunk);
+    for (const inv of (existing ?? [])) existingInvSet.add(inv.variant_id);
+  }
+  // Update existing
+  for (const row of invRows) {
+    if (existingInvSet.has(row.variant_id)) {
+      await supabase.from("inventory").update({ total_stock: row.total_stock }).eq("variant_id", row.variant_id);
+    }
+  }
+  // Insert new
+  const newInvRows = invRows.filter(r => !existingInvSet.has(r.variant_id));
+  for (let i = 0; i < newInvRows.length; i += CHUNK) {
+    await supabase.from("inventory").insert(newInvRows.slice(i, i + CHUNK));
   }
   for (let i = 0; i < listRows.length; i += CHUNK) {
     await supabase.from("channel_listings").insert(listRows.slice(i, i + CHUNK));
@@ -337,3 +360,4 @@ async function bulkInsert(supabase: ReturnType<typeof createClient>, items: Ebay
     insert_errors: insertErrors.slice(0, 5),  // show first 5 errors
   };
 }
+
