@@ -6,7 +6,6 @@ const corsHeaders = {
 };
 
 const SQ_API_BASE = "https://api.squarespace.com/1.0";
-const FILTER_CHUNK_SIZE = 150;
 
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") {
@@ -26,8 +25,257 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const products = await fetchAllSquarespaceProducts(sqApiKey);
-    const stats = await upsertProducts(supabase, products);
+    // 1. Fetch all products from Squarespace
+    const sqProducts = await fetchAllSquarespaceProducts(sqApiKey);
+
+    // 2. Build flat list of all variants with their parent product info
+    type SqRow = {
+      productExternalId: string;
+      productName: string;
+      productDescription: string | null;
+      imageUrl: string | null;
+      variantExternalId: string;
+      sku: string;
+      price: number;
+      stock: number;
+      option1: string | null;
+      option2: string | null;
+    };
+
+    const rows: SqRow[] = [];
+    for (const p of sqProducts) {
+      const imageUrl = p.images?.[0]?.url || null;
+      for (const v of p.variants) {
+        const attrs = v.attributes || {};
+        const optionValues = Object.values(attrs);
+        rows.push({
+          productExternalId: p.id,
+          productName: p.name,
+          productDescription: p.description || null,
+          imageUrl,
+          variantExternalId: v.id,
+          sku: v.sku || v.id,
+          price: parseFloat(v.pricing?.basePrice?.value || "0"),
+          stock: v.stock?.unlimited ? 999 : (v.stock?.quantity ?? 0),
+          option1: (optionValues[0] as string) || null,
+          option2: (optionValues[1] as string) || null,
+        });
+      }
+    }
+
+    // 3. Load existing products by name
+    const { data: existingProducts } = await supabase
+      .from("products")
+      .select("id, name");
+    const productIdByName = new Map<string, string>();
+    for (const p of existingProducts ?? []) {
+      if (p.name) productIdByName.set(p.name, p.id);
+    }
+
+    // 4. Load existing channel_listings for squarespace by channel_variant_id
+    const { data: existingListings } = await supabase
+      .from("channel_listings")
+      .select("id, variant_id, channel_variant_id, channel_product_id")
+      .eq("channel", "squarespace");
+    const listingByExtVariantId = new Map<string, { id: string; variant_id: string }>();
+    for (const l of existingListings ?? []) {
+      listingByExtVariantId.set(l.channel_variant_id, { id: l.id, variant_id: l.variant_id });
+    }
+
+    // 5. Load existing variants by id (for those already linked)
+    const linkedVariantIds = [...listingByExtVariantId.values()].map((l) => l.variant_id);
+    const variantIdByLinkedId = new Set<string>(linkedVariantIds);
+
+    // 6. Create missing products in bulk
+    const uniqueProductNames = [...new Set(rows.map((r) => r.productName))];
+    const missingProductNames = uniqueProductNames.filter((n) => !productIdByName.has(n));
+
+    if (missingProductNames.length > 0) {
+      // Build product rows - one per unique name
+      const nameToRow = new Map<string, SqRow>();
+      for (const r of rows) {
+        if (!nameToRow.has(r.productName)) nameToRow.set(r.productName, r);
+      }
+      const newProducts = missingProductNames.map((name) => {
+        const r = nameToRow.get(name)!;
+        return {
+          name,
+          description: r.productDescription,
+          image_url: r.imageUrl,
+          status: "active",
+          active: true,
+        };
+      });
+
+      // Insert in chunks of 500
+      for (let i = 0; i < newProducts.length; i += 500) {
+        const chunk = newProducts.slice(i, i + 500);
+        const { data: inserted } = await supabase
+          .from("products")
+          .insert(chunk)
+          .select("id, name");
+        for (const p of inserted ?? []) {
+          if (p.name) productIdByName.set(p.name, p.id);
+        }
+      }
+    }
+
+    // 7. For each row, determine variant_id — either from existing listing or create
+    //    Group new variants by product
+    const newVariantRows: Array<{
+      product_id: string;
+      internal_sku: string;
+      option1: string | null;
+      option2: string | null;
+      _variantExternalId: string;
+      _stock: number;
+      _price: number;
+    }> = [];
+    const rowsWithExistingVariant: Array<{
+      variantExternalId: string;
+      variantId: string;
+      stock: number;
+      price: number;
+      sku: string;
+      productExternalId: string;
+      productName: string;
+      imageUrl: string | null;
+    }> = [];
+
+    for (const r of rows) {
+      const existing = listingByExtVariantId.get(r.variantExternalId);
+      if (existing) {
+        rowsWithExistingVariant.push({
+          variantExternalId: r.variantExternalId,
+          variantId: existing.variant_id,
+          stock: r.stock,
+          price: r.price,
+          sku: r.sku,
+          productExternalId: r.productExternalId,
+          productName: r.productName,
+          imageUrl: r.imageUrl,
+        });
+      } else {
+        const productId = productIdByName.get(r.productName);
+        if (!productId) continue;
+        newVariantRows.push({
+          product_id: productId,
+          internal_sku: r.sku,
+          option1: r.option1,
+          option2: r.option2,
+          _variantExternalId: r.variantExternalId,
+          _stock: r.stock,
+          _price: r.price,
+        });
+      }
+    }
+
+    // 8. Bulk update inventory for existing variants
+    if (rowsWithExistingVariant.length > 0) {
+      // Group by stock value to minimise round trips — or just do it in chunks
+      // We'll do batch updates using upsert on variant_id
+      for (let i = 0; i < rowsWithExistingVariant.length; i += 200) {
+        const chunk = rowsWithExistingVariant.slice(i, i + 200);
+        // Build upsert payload
+        const invUpserts = chunk.map((r) => ({
+          variant_id: r.variantId,
+          total_stock: r.stock,
+        }));
+        await supabase
+          .from("inventory")
+          .upsert(invUpserts, { onConflict: "variant_id" });
+      }
+    }
+
+    // 9. Insert new variants in bulk, then create their inventory + listings
+    const createdVariantMap = new Map<string, { variantId: string; stock: number; price: number; sku: string; productId: string }>();
+
+    for (let i = 0; i < newVariantRows.length; i += 200) {
+      const chunk = newVariantRows.slice(i, i + 200);
+      const insertPayload = chunk.map((r) => ({
+        product_id: r.product_id,
+        internal_sku: r.internal_sku,
+        option1: r.option1,
+        option2: r.option2,
+      }));
+      const { data: inserted } = await supabase
+        .from("variants")
+        .insert(insertPayload)
+        .select("id, product_id, internal_sku");
+
+      for (let j = 0; j < (inserted ?? []).length; j++) {
+        const v = inserted![j];
+        const orig = chunk[j];
+        createdVariantMap.set(orig._variantExternalId, {
+          variantId: v.id,
+          stock: orig._stock,
+          price: orig._price,
+          sku: orig.internal_sku,
+          productId: v.product_id,
+        });
+      }
+    }
+
+    // 10. Bulk insert inventory for new variants
+    if (createdVariantMap.size > 0) {
+      const invRows = [...createdVariantMap.values()].map((v) => ({
+        variant_id: v.variantId,
+        product_id: v.productId,
+        total_stock: v.stock,
+      }));
+      for (let i = 0; i < invRows.length; i += 500) {
+        await supabase.from("inventory").insert(invRows.slice(i, i + 500));
+      }
+    }
+
+    // 11. Build all channel_listings upserts
+    const now = new Date().toISOString();
+    const listingUpserts: Array<{
+      id?: string;
+      variant_id: string;
+      channel: string;
+      channel_sku: string;
+      channel_price: number;
+      channel_product_id: string;
+      channel_variant_id: string;
+      last_synced_at: string;
+    }> = [];
+
+    for (const r of rows) {
+      const existing = listingByExtVariantId.get(r.variantExternalId);
+      let variantId = existing?.variant_id;
+      if (!variantId) {
+        const created = createdVariantMap.get(r.variantExternalId);
+        variantId = created?.variantId;
+      }
+      if (!variantId) continue;
+
+      const payload: typeof listingUpserts[0] = {
+        variant_id: variantId,
+        channel: "squarespace",
+        channel_sku: r.sku,
+        channel_price: r.price,
+        channel_product_id: r.productExternalId,
+        channel_variant_id: r.variantExternalId,
+        last_synced_at: now,
+      };
+      if (existing) payload.id = existing.id;
+      listingUpserts.push(payload);
+    }
+
+    for (let i = 0; i < listingUpserts.length; i += 500) {
+      await supabase
+        .from("channel_listings")
+        .upsert(listingUpserts.slice(i, i + 500), { onConflict: "id" });
+    }
+
+    const stats = {
+      total_squarespace_products: sqProducts.length,
+      total_variants: rows.length,
+      new_variants: createdVariantMap.size,
+      updated_variants: rowsWithExistingVariant.length,
+      listings_upserted: listingUpserts.length,
+    };
 
     await supabase.from("sync_log").insert({
       sync_type: "squarespace_import",
@@ -96,8 +344,7 @@ async function fetchAllSquarespaceProducts(apiKey: string): Promise<SqProduct[]>
     }
 
     const data = await resp.json();
-    const products = data.products || [];
-    allProducts.push(...products);
+    allProducts.push(...(data.products || []));
 
     if (data.pagination?.hasNextPage && data.pagination?.nextPageCursor) {
       cursor = data.pagination.nextPageCursor;
@@ -107,270 +354,4 @@ async function fetchAllSquarespaceProducts(apiKey: string): Promise<SqProduct[]>
   }
 
   return allProducts;
-}
-
-function chunkArray<T>(items: T[], chunkSize: number): T[][] {
-  const chunks: T[][] = [];
-  for (let index = 0; index < items.length; index += chunkSize) {
-    chunks.push(items.slice(index, index + chunkSize));
-  }
-  return chunks;
-}
-
-async function fetchRowsByColumn(
-  supabase: any,
-  table: string,
-  column: string,
-  values: string[],
-  select: string,
-) {
-  if (!values.length) return [];
-
-  const rows: any[] = [];
-  for (const chunk of chunkArray([...new Set(values)], FILTER_CHUNK_SIZE)) {
-    const { data, error } = await supabase.from(table).select(select).in(column, chunk);
-    if (error) throw error;
-    rows.push(...(data ?? []));
-  }
-
-  return rows;
-}
-
-async function fetchExistingSquarespaceListings(supabase: any, externalVariantIds: string[]) {
-  if (!externalVariantIds.length) return [];
-
-  const rows: Array<{ id: string; variant_id: string; channel_variant_id: string }> = [];
-  for (const chunk of chunkArray([...new Set(externalVariantIds)], FILTER_CHUNK_SIZE)) {
-    const { data, error } = await supabase
-      .from("channel_listings")
-      .select("id, variant_id, channel_variant_id")
-      .eq("channel", "squarespace")
-      .in("channel_variant_id", chunk);
-
-    if (error) throw error;
-    rows.push(...(data ?? []));
-  }
-
-  const variants = await fetchRowsByColumn(
-    supabase,
-    "variants",
-    "id",
-    rows.map((row) => row.variant_id),
-    "id, product_id",
-  );
-
-  const productIdByVariantId = new Map<string, string>();
-  for (const variant of variants) {
-    productIdByVariantId.set(variant.id, variant.product_id);
-  }
-
-  return rows.map((row) => ({
-    ...row,
-    product_id: productIdByVariantId.get(row.variant_id) ?? null,
-  }));
-}
-
-async function upsertProducts(supabase: any, squarespaceProducts: SqProduct[]) {
-  let productsCreated = 0;
-  let productsReused = 0;
-  let variantsCreated = 0;
-  let variantsReused = 0;
-  let listingsCreated = 0;
-  let listingsUpdated = 0;
-
-  const existingProducts = await fetchRowsByColumn(
-    supabase,
-    "products",
-    "name",
-    squarespaceProducts.map((product) => product.name),
-    "id, name, active",
-  );
-
-  const productIdByName = new Map<string, string>();
-  const productIsActiveByName = new Map<string, boolean>();
-  for (const product of existingProducts) {
-    if (!product.name) continue;
-
-    const selectedIsActive = productIsActiveByName.get(product.name);
-    if (!productIdByName.has(product.name) || (!selectedIsActive && product.active)) {
-      productIdByName.set(product.name, product.id);
-      productIsActiveByName.set(product.name, Boolean(product.active));
-    }
-  }
-
-  const existingListings = await fetchExistingSquarespaceListings(
-    supabase,
-    squarespaceProducts.flatMap((product) => product.variants.map((variant) => variant.id)),
-  );
-
-  const listingByExternalVariantId = new Map<string, {
-    id: string;
-    variant_id: string;
-    product_id: string | null;
-  }>();
-  for (const listing of existingListings) {
-    if (!listingByExternalVariantId.has(listing.channel_variant_id)) {
-      listingByExternalVariantId.set(listing.channel_variant_id, {
-        id: listing.id,
-        variant_id: listing.variant_id,
-        product_id: listing.product_id,
-      });
-    }
-  }
-
-  const existingVariants = await fetchRowsByColumn(
-    supabase,
-    "variants",
-    "product_id",
-    [
-      ...existingProducts.map((product) => product.id),
-      ...existingListings
-        .map((listing) => listing.product_id)
-        .filter((productId): productId is string => Boolean(productId)),
-    ],
-    "id, product_id, internal_sku",
-  );
-
-  const variantIdByProductAndSku = new Map<string, string>();
-  for (const variant of existingVariants) {
-    if (variant.internal_sku) {
-      variantIdByProductAndSku.set(`${variant.product_id}:${variant.internal_sku}`, variant.id);
-    }
-  }
-
-  for (const sqProduct of squarespaceProducts) {
-    const imageUrl = sqProduct.images?.[0]?.url || null;
-    const canonicalListing = sqProduct.variants
-      .map((variant) => listingByExternalVariantId.get(variant.id))
-      .find((listing): listing is { id: string; variant_id: string; product_id: string | null } => Boolean(listing));
-
-    let productId = canonicalListing?.product_id ?? productIdByName.get(sqProduct.name);
-
-    if (!productId) {
-      const { data: product, error: prodErr } = await supabase
-        .from("products")
-        .insert({
-          name: sqProduct.name,
-          description: sqProduct.description || null,
-          image_url: imageUrl,
-          status: "active",
-          active: true,
-        })
-        .select("id")
-        .single();
-
-      if (prodErr || !product) {
-        console.error(`Failed to create product for ${sqProduct.name}:`, prodErr);
-        continue;
-      }
-
-      productId = product.id;
-      productIdByName.set(sqProduct.name, product.id);
-      productIsActiveByName.set(sqProduct.name, true);
-      productsCreated++;
-    } else {
-      productsReused++;
-    }
-
-    for (const sqVariant of sqProduct.variants) {
-      const existingListing = listingByExternalVariantId.get(sqVariant.id);
-      if (existingListing?.product_id) {
-        productId = existingListing.product_id;
-      }
-
-      const price = parseFloat(sqVariant.pricing?.basePrice?.value || "0");
-      const attrs = sqVariant.attributes || {};
-      const optionValues = Object.values(attrs);
-      const variantSku = sqVariant.sku || sqVariant.id;
-      const variantKey = `${productId}:${variantSku}`;
-
-      let variantId = existingListing?.variant_id ?? variantIdByProductAndSku.get(variantKey);
-      if (!variantId) {
-        const { data: variant, error: variantErr } = await supabase
-          .from("variants")
-          .insert({
-            product_id: productId,
-            internal_sku: variantSku,
-            option1: optionValues[0] || null,
-            option2: optionValues[1] || null,
-          })
-          .select("id")
-          .single();
-
-        if (variantErr || !variant) {
-          console.error(`Failed to create variant for ${sqProduct.name} / ${variantSku}:`, variantErr);
-          continue;
-        }
-
-        variantId = variant.id;
-        variantIdByProductAndSku.set(variantKey, variant.id);
-        variantsCreated++;
-
-        const stock = sqVariant.stock?.unlimited ? 999 : (sqVariant.stock?.quantity ?? 0);
-        await supabase.from("inventory").insert({
-          variant_id: variant.id,
-          product_id: productId,
-          total_stock: stock,
-        });
-      } else {
-        variantsReused++;
-        variantIdByProductAndSku.set(variantKey, variantId);
-        // FIX: update inventory to reflect latest Squarespace stock quantity
-        const stock = sqVariant.stock?.unlimited ? 999 : (sqVariant.stock?.quantity ?? 0);
-        await supabase.from("inventory").update({ total_stock: stock }).eq("variant_id", variantId);
-      }
-
-      const listingPayload = {
-        variant_id: variantId,
-        channel: "squarespace",
-        channel_sku: variantSku,
-        channel_price: price,
-        channel_product_id: sqProduct.id,
-        channel_variant_id: sqVariant.id,
-        last_synced_at: new Date().toISOString(),
-      };
-
-      if (existingListing) {
-        const { error: listingErr } = await supabase
-          .from("channel_listings")
-          .update({ ...listingPayload, updated_at: new Date().toISOString() })
-          .eq("id", existingListing.id);
-
-        if (listingErr) {
-          console.error(`Failed to update listing for ${sqProduct.name} / ${variantSku}:`, listingErr);
-          continue;
-        }
-
-        listingsUpdated++;
-      } else {
-        const { data: listing, error: listingErr } = await supabase
-          .from("channel_listings")
-          .insert(listingPayload)
-          .select("id, variant_id, channel_variant_id")
-          .single();
-
-        if (listingErr || !listing) {
-          console.error(`Failed to create listing for ${sqProduct.name} / ${variantSku}:`, listingErr);
-          continue;
-        }
-
-        listingByExternalVariantId.set(listing.channel_variant_id, {
-          id: listing.id,
-          variant_id: listing.variant_id,
-          product_id: productId,
-        });
-        listingsCreated++;
-      }
-    }
-  }
-
-  return {
-    total_squarespace_products: squarespaceProducts.length,
-    products_created: productsCreated,
-    products_reused: productsReused,
-    variants_created: variantsCreated,
-    variants_reused: variantsReused,
-    listings_created: listingsCreated,
-    listings_updated: listingsUpdated,
-  };
 }
