@@ -5,7 +5,6 @@ import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { useQueryClient } from "@tanstack/react-query";
 
-// This part is what the dashboard needs to stop being a blank screen
 export function useQuickSync() {
   const [syncing, setSyncing] = useState(false);
   const queryClient = useQueryClient();
@@ -17,7 +16,12 @@ export function useQuickSync() {
     try {
       toast.info(`${label} started...`);
       
-      // Trigger the imports
+      // If it's a full reset, we tell the database to clear first
+      if (mode === "full") {
+        await supabase.rpc('clear_inventory_data'); // This calls a cleaner tool in Supabase
+      }
+
+      // Trigger the imports from eBay and Squarespace
       const [ebayRes, sqRes] = await Promise.all([
         supabase.functions.invoke("ebay-import", { body: { mode } }),
         supabase.functions.invoke("squarespace-import", { body: { mode } }),
@@ -26,8 +30,11 @@ export function useQuickSync() {
       if (ebayRes.error) toast.error(`eBay: ${ebayRes.error.message}`);
       if (sqRes.error) toast.error(`Sqsp: ${sqRes.error.message}`);
 
-      queryClient.invalidateQueries({ queryKey: ["products"] });
-      toast.success("Sync Complete!");
+      // FORCE THE BROWSER TO FORGET OLD ITEMS
+      await queryClient.clear(); 
+      await queryClient.invalidateQueries();
+      
+      toast.success("Catalogue Refreshed Successfully!");
     } catch (err: any) {
       toast.error(err.message);
     } finally {
@@ -49,7 +56,7 @@ export const QuickSyncButton = () => {
       </Button>
       <Button variant="default" size="sm" onClick={() => triggerSync("full")} disabled={syncing}>
         <DatabaseZap className="w-4 h-4 mr-2" />
-        Full Reset
+        Full Catalogue Reset
       </Button>
     </div>
   );
