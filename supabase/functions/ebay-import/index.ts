@@ -12,12 +12,12 @@ Deno.serve(async (req) => {
   const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
   const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-  const ebayAppId = Deno.env.get("EBAY_APP_ID");
+  const ebayAppId = Deno.env.get("APP_ID");
   const ebayCertId = Deno.env.get("EBAY_CERT_ID");
 
   if (!ebayAppId || !ebayCertId) {
     return new Response(
-      JSON.stringify({ error: "Missing EBAY_APP_ID or EBAY_CERT_ID" }),
+      JSON.stringify({ error: "Missing APP_ID or EBAY_CERT_ID" }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }

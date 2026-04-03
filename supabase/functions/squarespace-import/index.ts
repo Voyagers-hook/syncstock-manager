@@ -17,9 +17,9 @@ Deno.serve(async (req) => {
   const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
   const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-  const sqApiKey = Deno.env.get("SQUARESPACE_API_KEY");
+  const sqApiKey = Deno.env.get("SQUARESPACE_API");
   if (!sqApiKey) {
-    return new Response(JSON.stringify({ error: "Missing SQUARESPACE_API_KEY" }), {
+    return new Response(JSON.stringify({ error: "Missing SQUARESPACE_API" }), {
       status: 500,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
