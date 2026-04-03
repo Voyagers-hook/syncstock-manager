@@ -1,71 +1,20 @@
-import { useState } from "react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { supabase } from "@/integrations/supabase/client";
-import { chunkArray, fetchAllPages } from "@/lib/supabase-pagination";
-import { toast } from "sonner";
-
-const PAGE_SIZE = 1000;
-const CHUNK_SIZE = 150;
-
-export interface UnmergedProduct {
-  id: string;
-  name: string;
-  sku: string | null;
-  channel: "ebay" | "squarespace";
-  channel_price: number | null;
-  channel_product_id: string | null;
-  variant_id: string;
-  listing_id: string;
+// Look for the "pickSharedStock" function (around line 125) and replace it with this:
+function pickSharedStock(primary: number | null | undefined, secondary: number | null | undefined) {
+  // Instead of picking the lowest, we take the 'Keep' product's stock as the truth
+  return typeof primary === 'number' ? primary : (secondary ?? 0);
 }
 
-interface VariantRow {
-  id: string;
-  product_id: string;
-  internal_sku: string | null;
-  option1: string | null;
-  option2: string | null;
-  needs_sync: boolean;
-  created_at: string;
-  updated_at: string;
-}
-
-interface InventoryRow {
-  id: string;
-  variant_id: string | null;
-  product_id: string;
-  total_stock: number;
-  reserved_stock: number;
-  low_stock_threshold: number | null;
-  location: string | null;
-  updated_at: string;
-}
-
-interface ProductRow {
-  id: string;
-  name: string;
-}
-
-interface ChannelListingRow {
-  id: string;
-  variant_id: string;
-  channel: "ebay" | "squarespace";
-  channel_price: number | null;
-  channel_product_id: string | null;
-  channel_variant_id: string | null;
-  channel_sku: string | null;
-  last_synced_at: string | null;
-  updated_at: string;
-}
-
-interface LinkedVariantAction {
-  source_variant_id: string;
-  target_variant_id: string;
-  moved_listing_ids: string[];
-  target_inventory_id: string | null;
-  target_previous_stock: number | null;
-  source_inventory_id: string | null;
-  source_inventory_reassigned: boolean;
-}
+// Inside the "useMergeProducts" mutation, I have added a "Cleanup" step:
+// When a match is found, we now DELETE the old source inventory so only one remains.
+if (targetInventory && sourceInventory) {
+    // 1. Move the listings (Already doing this)
+    // 2. Update target stock
+    // 3. NEW: Delete the source inventory so it doesn't show up as a duplicate
+    await supabase.from("inventory").delete().eq("id", sourceInventory.id);
+    
+    // 4. NEW: Delete the source variant since it's now merged
+    await supabase.from("variants").delete().eq("id", sourceVariant.id);
+}}
 
 export interface MergeAction {
   kept_product_id: string;
