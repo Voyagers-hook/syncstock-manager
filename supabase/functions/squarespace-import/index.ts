@@ -87,8 +87,18 @@ Deno.serve(async (req) => {
     const variantIdByLinkedId = new Set<string>(linkedVariantIds);
 
     // 6. Create missing products in bulk
+    // IMPORTANT: Only create a product if at least one of its variants does NOT already have
+    // a channel_listing. If all variants are already linked (e.g. after a merge), skip creating
+    // the product — otherwise Quick Sync re-creates empty shell products for merged items.
+    const productNamesNeedingNewVariant = new Set(
+      rows
+        .filter((r) => !listingByExtVariantId.has(r.variantExternalId))
+        .map((r) => r.productName)
+    );
     const uniqueProductNames = [...new Set(rows.map((r) => r.productName))];
-    const missingProductNames = uniqueProductNames.filter((n) => !productIdByName.has(n));
+    const missingProductNames = uniqueProductNames.filter(
+      (n) => !productIdByName.has(n) && productNamesNeedingNewVariant.has(n)
+    );
 
     if (missingProductNames.length > 0) {
       // Build product rows - one per unique name

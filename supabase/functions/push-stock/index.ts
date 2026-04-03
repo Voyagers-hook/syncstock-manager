@@ -8,6 +8,7 @@ const corsHeaders = {
 
 const EBAY_API_BASE = "https://api.ebay.com";
 const SQ_API_BASE = "https://api.squarespace.com/1.0";
+const SQ_API_V2_BASE = "https://api.squarespace.com/v2";
 
 const BodySchema = z.object({
   variantId: z.string().uuid(),
@@ -187,9 +188,9 @@ async function pushSquarespaceUpdate(
     if (!productId) throw new Error("Missing Squarespace product ID for price update");
 
     const resp = await fetch(
-      `${SQ_API_BASE}/commerce/products/${productId}/variants/${variantId}`,
+      `${SQ_API_V2_BASE}/commerce/products/${productId}/variants/${variantId}`,
       {
-        method: "PATCH",
+        method: "POST",
         headers: {
           Authorization: `Bearer ${apiKey}`,
           "Content-Type": "application/json",
