@@ -271,11 +271,18 @@ export function useUpdateInventory() {
       });
 
       if (syncError) {
-        throw new Error(`Stock saved locally but failed to push to channels: ${syncError.message}`);
+        // Non-fatal: stock is saved locally, push failed
+        console.warn("push-stock network error:", syncError.message);
+        return { pushError: syncError.message };
       }
 
-      if (data?.failed) {
-        throw new Error(`Stock saved locally but failed on ${data.failed} channel sync${data.failed === 1 ? "" : "s"}.`);
+      // Check if any channel push failed (push-stock returns 207 for partial failures)
+      const failedChannels = (data?.results ?? [])
+        .filter((r: any) => r.status === "error")
+        .map((r: any) => r.channel);
+
+      if (failedChannels.length > 0) {
+        throw new Error(`Stock saved locally but failed to push to: ${failedChannels.join(", ")}. ${data.results.find((r: any) => r.status === "error")?.message ?? ""}`);
       }
 
       return data;

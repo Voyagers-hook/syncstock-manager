@@ -139,11 +139,9 @@ const ProductTable = () => {
                 <>
                   <tr key={product.id} className="border-b last:border-b-0 hover:bg-muted/30 transition-colors">
                     <td className="px-3 py-3.5">
-                      {product.variants.length > 0 && (
-                        <button onClick={() => setExpandedId(expandedId === product.id ? null : product.id)} className="text-muted-foreground hover:text-foreground">
-                          {expandedId === product.id ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
-                        </button>
-                      )}
+                      <button onClick={() => setExpandedId(expandedId === product.id ? null : product.id)} className="text-muted-foreground hover:text-foreground">
+                        {expandedId === product.id ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                      </button>
                     </td>
                     <td className="px-5 py-3.5">
                       <span className="text-xs font-mono text-muted-foreground">{product.sku ?? "—"}</span>
@@ -152,13 +150,13 @@ const ProductTable = () => {
                       <span className="text-sm font-medium text-foreground">{product.name}</span>
                     </td>
                     <td className="px-5 py-3.5 text-center">
-                      <InlineEditCell
-                        value={product.total_stock}
-                        prefix=""
-                        align="center"
-                        className="font-semibold text-foreground"
-                        onSave={(v) => handleSaveStock(product, v)}
-                      />
+                      <span
+                        className="text-sm font-semibold text-foreground cursor-pointer hover:text-primary"
+                        title="Expand row to edit per-variant stock"
+                        onClick={() => setExpandedId(expandedId === product.id ? null : product.id)}
+                      >
+                        {product.total_stock}
+                      </span>
                     </td>
                     <td className="px-5 py-3.5 text-right">
                       <InlineEditCell
