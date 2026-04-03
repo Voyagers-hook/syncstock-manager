@@ -22,9 +22,10 @@ export function useUnmergedProducts() {
   });
 }
 
-// FIXED MERGE LOGIC
-// - Uses MAX(keep_stock, remove_stock) so no stock is ever lost
-// - Moves inventory product_id when carrying over unmatched variants
+// ─── FIXED MERGE LOGIC v2 ────────────────────────────────────────────
+// Key fix: Before deleting removed variant inventory, ensure the kept
+// variant actually HAS an inventory row.  If not, MOVE it instead of
+// deleting it.  If both have inventory, use MAX (same physical stock).
 export function useMergeProducts() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -32,85 +33,80 @@ export function useMergeProducts() {
       const { data: removeVariants } = await supabase.from("variants").select("*").eq("product_id", removeId);
       const { data: keepVariants } = await supabase.from("variants").select("*").eq("product_id", keepId);
 
-      if (!removeVariants || !keepVariants) throw new Error("Missing variant data");
+      if (!removeVariants || !keepVariants) throw new Error("Missing data");
 
       for (const rv of removeVariants) {
-        const match = keepVariants.find(
-          kv => kv.option1 === rv.option1 && kv.option2 === rv.option2
+        // Try to find a matching variant on the kept product by option values
+        // Also match null-to-null (two simple/single-variant products)
+        const match = keepVariants.find(kv =>
+          (kv.option1 ?? null) === (rv.option1 ?? null) &&
+          (kv.option2 ?? null) === (rv.option2 ?? null)
         );
 
         if (match) {
-          // ── Fetch both inventory rows ──────────────────────────────────────
-          const { data: keepInv } = await supabase
-            .from("inventory")
-            .select("id, total_stock")
-            .eq("variant_id", match.id)
-            .maybeSingle();
-
-          const { data: removeInv } = await supabase
-            .from("inventory")
-            .select("id, total_stock")
-            .eq("variant_id", rv.id)
-            .maybeSingle();
-
-          // ── Set final stock to MAX of both (same physical items) ───────────
-          const finalStock = Math.max(keepInv?.total_stock ?? 0, removeInv?.total_stock ?? 0);
-
-          if (keepInv) {
-            // Update kept variant's inventory to the correct MAX stock
-            await supabase
-              .from("inventory")
-              .update({ total_stock: finalStock })
-              .eq("id", keepInv.id);
-
-            // Delete the duplicate inventory row for the removed variant
-            if (removeInv) {
-              await supabase.from("inventory").delete().eq("id", removeInv.id);
-            }
-          } else if (removeInv) {
-            // Kept variant had no inventory row — move the removed one across
-            await supabase
-              .from("inventory")
-              .update({ variant_id: match.id, product_id: keepId, total_stock: finalStock })
-              .eq("id", removeInv.id);
-          }
-
-          // Move channel listings to the kept variant
+          // ── 1. Move all channel_listings to the kept variant ──
           await supabase
             .from("channel_listings")
             .update({ variant_id: match.id })
             .eq("variant_id", rv.id);
 
-          // Delete the now-redundant removed variant (cascade will clean any remaining inventory)
-          await supabase.from("variants").delete().eq("id", rv.id);
+          // ── 2. Consolidate inventory (the critical fix) ──
+          const { data: keepInv } = await supabase
+            .from("inventory")
+            .select("*")
+            .eq("variant_id", match.id)
+            .maybeSingle();
 
+          const { data: removeInv } = await supabase
+            .from("inventory")
+            .select("*")
+            .eq("variant_id", rv.id)
+            .maybeSingle();
+
+          if (removeInv && keepInv) {
+            // Both have inventory → keep the MAX value (same physical stock)
+            const maxStock = Math.max(keepInv.stock ?? 0, removeInv.stock ?? 0);
+            await supabase
+              .from("inventory")
+              .update({ stock: maxStock })
+              .eq("id", keepInv.id);
+            await supabase
+              .from("inventory")
+              .delete()
+              .eq("id", removeInv.id);
+          } else if (removeInv && !keepInv) {
+            // Only the removed variant has inventory → MOVE it to kept variant
+            await supabase
+              .from("inventory")
+              .update({ variant_id: match.id })
+              .eq("id", removeInv.id);
+          }
+          // If only keepInv exists → already fine, nothing to do
+          // If neither has inventory → nothing to move
+
+          // ── 3. Delete the now-orphaned removed variant ──
+          await supabase
+            .from("variants")
+            .delete()
+            .eq("id", rv.id);
         } else {
-          // No matching variant in keep product — move this variant over wholesale
+          // No option-match → move variant + its inventory + its listings to kept product
           await supabase
             .from("variants")
             .update({ product_id: keepId })
             .eq("id", rv.id);
-
-          // Keep inventory consistent by updating its product_id too
-          await supabase
-            .from("inventory")
-            .update({ product_id: keepId })
-            .eq("variant_id", rv.id);
         }
       }
 
       // Deactivate the removed product
       await supabase.from("products").update({ active: false }).eq("id", removeId);
-
       return { keepId };
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["products"] });
-      toast.success("Merged successfully!");
-    },
-    onError: (err: any) => {
-      toast.error(`Merge failed: ${err.message}`);
-    },
+      queryClient.invalidateQueries({ queryKey: ["unmerged-products"] });
+      toast.success("Merged successfully — stock consolidated!");
+    }
   });
 }
 
