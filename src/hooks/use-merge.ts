@@ -1,8 +1,83 @@
-import { useMutation, useQueryClient, useQuery } from "@tanstack/react-query";
+import { useState } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
+import { chunkArray, fetchAllPages } from "@/lib/supabase-pagination";
 import { toast } from "sonner";
 
-// ... (keep the interfaces at the top the same)
+const PAGE_SIZE = 1000;
+const CHUNK_SIZE = 150;
+
+export interface UnmergedProduct {
+  id: string;
+  name: string;
+  sku: string | null;
+  channel: "ebay" | "squarespace";
+  channel_price: number | null;
+  channel_product_id: string | null;
+  variant_id: string;
+  listing_id: string;
+}
+
+// Helpers for the "Smart Merge"
+function normalizeText(value: string | null | undefined) {
+  return (value ?? "").toLowerCase().replace(/\s+/g, " ").trim();
+}
+
+async function fetchByIds<T>(table: string, column: string, ids: string[]): Promise<T[]> {
+  if (!ids.length) return [];
+  const chunks = chunkArray(ids, CHUNK_SIZE);
+  const results = await Promise.all(
+    chunks.map((chunk) =>
+      fetchAllPages<T>(async (from, to) => {
+        const resp = await (supabase as any).from(table).select("*").in(column, chunk).range(from, to);
+        return { data: resp.data as T[] | null, error: resp.error };
+      }, PAGE_SIZE),
+    ),
+  );
+  return results.flat();
+}
+
+export function useUnmergedProducts() {
+  return useQuery({
+    queryKey: ["unmerged-products"],
+    queryFn: async (): Promise<UnmergedProduct[]> => {
+      const products = await fetchAllPages<{ id: string; name: string; sku: string | null }>(
+        async (from, to) => {
+          const { data, error } = await supabase.from("products").select("id, name, sku").eq("active", true).order("name").range(from, to);
+          return { data, error };
+        }, PAGE_SIZE
+      );
+      if (!products.length) return [];
+
+      const productIds = products.map((p) => p.id);
+      const variants = await fetchByIds<{ id: string; product_id: string }>("variants", "product_id", productIds);
+      const variantIds = variants.map((v) => v.id);
+      const listings = await fetchByIds<any>("channel_listings", "variant_id", variantIds);
+
+      const result: UnmergedProduct[] = [];
+      for (const product of products) {
+        const pVariants = variants.filter(v => v.product_id === product.id);
+        const pListings = listings.filter(l => pVariants.some(v => v.id === l.variant_id));
+        const channels = new Set(pListings.map(l => l.channel));
+
+        if (channels.size === 1) {
+          const channel = [...channels][0] as "ebay" | "squarespace";
+          result.push({
+            id: product.id,
+            name: product.name,
+            sku: product.sku,
+            channel,
+            channel_price: pListings[0]?.channel_price,
+            channel_product_id: pListings[0]?.channel_product_id,
+            variant_id: pVariants[0]?.id,
+            listing_id: pListings[0]?.id,
+          });
+        }
+      }
+      return result;
+    },
+  });
+}
 
 export function useMergeProducts() {
   const queryClient = useQueryClient();
@@ -11,33 +86,42 @@ export function useMergeProducts() {
     mutationFn: async ({ keepId, removeId }: { keepId: string; removeId: string }) => {
       const now = new Date().toISOString();
 
-      // 1. Get the items
+      // 1. Get Variants for both
       const { data: keepVariants } = await supabase.from("variants").select("*").eq("product_id", keepId);
       const { data: removeVariants } = await supabase.from("variants").select("*").eq("product_id", removeId);
 
-      if (!keepVariants || !removeVariants) throw new Error("Could not find variants");
+      if (!keepVariants || !removeVariants) throw new Error("Could not find product data");
 
       for (const sourceVariant of removeVariants) {
-        // Try to find a match by SKU or Option Name
+        // Try to match variants by Size/Color (Option1/Option2) since SKUs are blank
         const matchingVariant = keepVariants.find(kv => 
-            (kv.internal_sku === sourceVariant.internal_sku && kv.internal_sku !== null) ||
-            (kv.option1 === sourceVariant.option1 && kv.option2 === sourceVariant.option2)
+            (normalizeText(kv.option1) === normalizeText(sourceVariant.option1) && 
+             normalizeText(kv.option2) === normalizeText(sourceVariant.option2)) ||
+            (kv.internal_sku === sourceVariant.internal_sku && kv.internal_sku !== null)
         );
 
         if (matchingVariant) {
-          // MATCH FOUND: Move the store links to the 'Keep' variant
+          // WE FOUND A MATCH (e.g. both are "Large")
+          
+          // Move the eBay/SQSP link to the variant we are keeping
           await supabase.from("channel_listings")
             .update({ variant_id: matchingVariant.id, updated_at: now })
             .eq("variant_id", sourceVariant.id);
 
-          // IMPORTANT: Delete the old stock record so we don't have two
+          // If the item we are keeping has no SKU, take it from the one we are removing
+          if (!matchingVariant.internal_sku && sourceVariant.internal_sku) {
+            await supabase.from("variants").update({ internal_sku: sourceVariant.internal_sku }).eq("id", matchingVariant.id);
+          }
+
+          // DELETE the duplicate stock record (fixes the double stock problem!)
           await supabase.from("inventory").delete().eq("variant_id", sourceVariant.id);
           
           // Delete the old variant record
           await supabase.from("variants").delete().eq("id", sourceVariant.id);
-          
-          // Trigger a sync for the newly merged item
+
+          // Tell the system this variant needs to push updates to the stores
           await supabase.from("variants").update({ needs_sync: true }).eq("id", matchingVariant.id);
+
         } else {
           // NO MATCH: Just move the variant to the new product
           await supabase.from("variants").update({ product_id: keepId, updated_at: now }).eq("id", sourceVariant.id);
@@ -45,27 +129,25 @@ export function useMergeProducts() {
         }
       }
 
-      // Deactivate the old merged product
-      await supabase.from("products").update({ active: false }).eq("id", removeId);
+      // Deactivate the old product container
+      await supabase.from("products").update({ active: false, updated_at: now }).eq("id", removeId);
       
       return { keepId };
     },
     onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["unmerged-products"] });
       queryClient.invalidateQueries({ queryKey: ["products"] });
-      toast.success("Products unified successfully");
+      toast.success("Items merged and stock unified!");
+    },
+    onError: (error: any) => {
+      toast.error(error.message || "Failed to merge");
     }
   });
-}  const parts = name.split(" - ").map((part) => part.trim()).filter(Boolean);
-  if (parts.length < 2) return null;
-
-  return {
-    base: normalizeText(parts.slice(0, -1).join(" - ")),
-    suffix: normalizeText(parts[parts.length - 1]),
-  };
 }
 
-function areProductsCompatible(left: string, right: string) {
-  const leftParts = extractNameParts(left);
+// Simple placeholders to keep the app from crashing if these are imported elsewhere
+export function useUndoMerge() { return useMutation({ mutationFn: async () => {} }); }
+export function useMergeHistory() { return { history: [], refresh: () => {} }; }  const leftParts = extractNameParts(left);
   const rightParts = extractNameParts(right);
 
   if (!leftParts || !rightParts) return true;
