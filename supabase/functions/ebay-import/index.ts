@@ -14,10 +14,9 @@ Deno.serve(async (req) => {
     const appId = Deno.env.get("EBAY_APP_ID");
     const certId = Deno.env.get("EBAY_CERT_ID");
     
-    if (!appId || !certId) return new Response(JSON.stringify({ error: "Missing Keys" }), { status: 500, headers: cors });
-
     const { data: tokenRow } = await supabase.from("sync_secrets").select("value").eq("key", "ebay_refresh_token").single();
     
+    // Get Access Token
     const tokenResp = await fetch(`${EBAY}/identity/v1/oauth2/token`, {
       method: "POST",
       headers: {
@@ -33,14 +32,17 @@ Deno.serve(async (req) => {
     const tokenData = await tokenResp.json();
     const accessToken = tokenData.access_token;
 
-    // 1. Fetch Listings from eBay
+    // 1. Fetch Listings (Using smaller page sizes to prevent Timeout)
+    console.log("Starting eBay fetch...");
     const items = await fetchAllListings(accessToken);
+    console.log(`Successfully fetched ${items.length} items from eBay.`);
 
-    // 2. Process Data
+    // 2. Bulk Process Data
     const stats = await bulkProcess(supabase, items);
 
     return new Response(JSON.stringify({ success: true, ...stats }), { headers: { ...cors, "Content-Type": "application/json" } });
   } catch (err) {
+    console.error("Import Error:", String(err));
     return new Response(JSON.stringify({ error: String(err) }), { status: 500, headers: cors });
   }
 });
@@ -54,11 +56,12 @@ async function fetchAllListings(token: string) {
   const all = [];
   let page = 1;
   while (true) {
+    console.log(`Fetching Page ${page} from eBay...`);
     const xml = `<?xml version="1.0" encoding="utf-8"?>
 <GetMyeBaySellingRequest xmlns="urn:ebay:apis:eBLBaseComponents">
   <RequesterCredentials><eBayAuthToken>${token}</eBayAuthToken></RequesterCredentials>
   <ActiveList>
-    <Pagination><EntriesPerPage>200</EntriesPerPage><PageNumber>${page}</PageNumber></Pagination>
+    <Pagination><EntriesPerPage>50</EntriesPerPage><PageNumber>${page}</PageNumber></Pagination>
   </ActiveList>
   <DetailLevel>ReturnAll</DetailLevel>
 </GetMyeBaySellingRequest>`;
@@ -66,6 +69,116 @@ async function fetchAllListings(token: string) {
     const r = await fetch(`${EBAY}/ws/api.dll`, {
       method: "POST",
       headers: { "X-EBAY-API-CALL-NAME": "GetMyeBaySelling", "X-EBAY-API-SITEID": "3", "Content-Type": "text/xml" },
+      body: xml,
+    });
+    const text = await r.text();
+    const items = parseXml(text);
+    all.push(...items);
+    
+    const totalPages = parseInt(xtag(text, "TotalNumberOfPages") ?? "1");
+    if (page >= totalPages || items.length === 0) break;
+    page++;
+    
+    // Safety break to prevent infinite loops
+    if (page > 100) break;
+  }
+  return all;
+}
+
+function parseXml(xml: string) {
+  const items = [];
+  const re = /<Item>([\s\S]*?)<\/Item>/g;
+  let m;
+  while ((m = re.exec(xml)) !== null) {
+    const x = m[1];
+    const itemId = xtag(x, "ItemID");
+    const title = xtag(x, "Title");
+    const sku = xtag(x, "SKU") || itemId;
+    const price = xtag(x, "CurrentPrice") || "0";
+    const qty = parseInt(xtag(x, "Quantity") ?? "0");
+
+    const variations = [];
+    const vblock = x.match(/<Variations>([\s\S]*?)<\/Variations>/);
+    if (vblock) {
+      const vre = /<Variation>([\s\S]*?)<\/Variation>/g;
+      let vm;
+      while ((vm = vre.exec(vblock[1])) !== null) {
+        const vx = vm[1];
+        const vSku = xtag(vx, "SKU") || `${itemId}-${xtag(vx, "StartPrice")}`;
+        const vQty = parseInt(xtag(vx, "Quantity") ?? "0");
+        const parts = [];
+        const nvre = /<NameValueList>([\s\S]*?)<\/NameValueList>/g;
+        let nvm;
+        while ((nvm = nvre.exec(vx)) !== null) {
+          const val = xtag(nvm[1], "Value");
+          if (val) parts.push(val);
+        }
+        variations.push({ sku: vSku, price: xtag(vx, "StartPrice") || price, name: parts.join(" / "), qty: vQty });
+      }
+    }
+    items.push({ itemId, title, sku, price, qty, variations });
+  }
+  return items;
+}
+
+async function bulkProcess(supabase: any, items: any[]) {
+  const now = new Date().toISOString();
+  console.log("Starting Database Bulk Update...");
+
+  const productRows = items.map(i => ({ name: i.title, sku: i.sku, active: true, status: 'active' }));
+  await supabase.from("products").upsert(productRows, { onConflict: 'sku' });
+  
+  const { data: prods } = await supabase.from("products").select("id, sku");
+  const prodMap = new Map(prods.map((p: any) => [p.sku, p.id]));
+
+  const varRows = [];
+  for (const item of items) {
+    const pId = prodMap.get(item.sku);
+    const vars = item.variations.length > 0 ? item.variations : [{ sku: item.sku, name: null, qty: item.qty, price: item.price }];
+    for (const v of vars) {
+      varRows.push({ product_id: pId, internal_sku: v.sku, option1: v.name });
+    }
+  }
+  
+  // Save variants in batches
+  for (let i = 0; i < varRows.length; i += 100) {
+    await supabase.from("variants").upsert(varRows.slice(i, i + 100), { onConflict: 'internal_sku' });
+  }
+
+  const { data: vrnts } = await supabase.from("variants").select("id, internal_sku");
+  const varMap = new Map(vrnts.map((v: any) => [v.internal_sku, v.id]));
+
+  const invRows = [];
+  const listRows = [];
+
+  for (const item of items) {
+    const pId = prodMap.get(item.sku);
+    const vars = item.variations.length > 0 ? item.variations : [{ sku: item.sku, name: null, qty: item.qty, price: item.price }];
+    for (const v of vars) {
+      const vId = varMap.get(v.sku);
+      if (!vId) continue;
+      invRows.push({ variant_id: vId, product_id: pId, total_stock: v.qty });
+      listRows.push({
+        variant_id: vId,
+        channel: "ebay",
+        channel_sku: v.sku,
+        channel_price: parseFloat(v.price),
+        channel_product_id: `v1|${item.itemId}|0`,
+        channel_variant_id: v.name || "",
+        last_synced_at: now
+      });
+    }
+  }
+
+  // Final Bulk Save
+  for (let i = 0; i < invRows.length; i += 100) {
+    await supabase.from("inventory").upsert(invRows.slice(i, i + 100), { onConflict: 'variant_id' });
+    await supabase.from("channel_listings").upsert(listRows.slice(i, i + 100), { onConflict: 'channel_product_id,channel_variant_id' });
+  }
+
+  console.log("Database Update Complete.");
+  return { total_items: items.length };
+}      headers: { "X-EBAY-API-CALL-NAME": "GetMyeBaySelling", "X-EBAY-API-SITEID": "3", "Content-Type": "text/xml" },
       body: xml,
     });
     const text = await r.text();
