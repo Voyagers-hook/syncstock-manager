@@ -266,7 +266,7 @@ Deno.serve(async (req) => {
     for (let i = 0; i < listingUpserts.length; i += 500) {
       await supabase
         .from("channel_listings")
-        .upsert(listingUpserts.slice(i, i + 500), { onConflict: "id" });
+        .upsert(listingUpserts.slice(i, i + 500), { onConflict: "channel,channel_variant_id" });
     }
 
     const stats = {

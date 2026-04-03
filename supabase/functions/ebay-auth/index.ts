@@ -35,7 +35,7 @@ Deno.serve(async (req) => {
     ].join(" ");
 
     // Check if we should use the eBay RuName from secrets
-    const ruName = Deno.env.get("EBAY_RUNAME");
+    const ruName = Deno.env.get("EBAY-RUNAME");
     
     if (!ruName) {
       return new Response(
@@ -56,7 +56,7 @@ Deno.serve(async (req) => {
   // Step 2: Exchange authorization code for tokens
   try {
     const credentials = btoa(`${ebayAppId}:${ebayCertId}`);
-    const ruName = Deno.env.get("EBAY_RUNAME")!;
+    const ruName = Deno.env.get("EBAY-RUNAME")!;
     const redirectUri = `${supabaseUrl}/functions/v1/ebay-auth`;
 
     const tokenResp = await fetch("https://api.ebay.com/identity/v1/oauth2/token", {
