@@ -1,71 +1,61 @@
-// Look for the "pickSharedStock" function (around line 125) and replace it with this:
-function pickSharedStock(primary: number | null | undefined, secondary: number | null | undefined) {
-  // Instead of picking the lowest, we take the 'Keep' product's stock as the truth
-  return typeof primary === 'number' ? primary : (secondary ?? 0);
-}
+import { useMutation, useQueryClient, useQuery } from "@tanstack/react-query";
+import { supabase } from "@/integrations/supabase/client";
+import { toast } from "sonner";
 
-// Inside the "useMergeProducts" mutation, I have added a "Cleanup" step:
-// When a match is found, we now DELETE the old source inventory so only one remains.
-if (targetInventory && sourceInventory) {
-    // 1. Move the listings (Already doing this)
-    // 2. Update target stock
-    // 3. NEW: Delete the source inventory so it doesn't show up as a duplicate
-    await supabase.from("inventory").delete().eq("id", sourceInventory.id);
-    
-    // 4. NEW: Delete the source variant since it's now merged
-    await supabase.from("variants").delete().eq("id", sourceVariant.id);
-}}
+// ... (keep the interfaces at the top the same)
 
-export interface MergeAction {
-  kept_product_id: string;
-  removed_product_id: string;
-  moved_variant_ids: string[];
-  moved_listing_ids: string[];
-  moved_inventory_ids: string[];
-  linked_variants: LinkedVariantAction[];
-  timestamp: string;
-}
+export function useMergeProducts() {
+  const queryClient = useQueryClient();
 
-async function fetchByIds<T>(
-  table: string,
-  column: string,
-  ids: string[],
-  select: string = "*",
-): Promise<T[]> {
-  if (!ids.length) return [];
-  const chunks = chunkArray(ids, CHUNK_SIZE);
-  const results = await Promise.all(
-    chunks.map((chunk) =>
-      fetchAllPages<T>(async (from, to) => {
-        const resp = await (supabase as any)
-          .from(table)
-          .select(select)
-          .in(column, chunk)
-          .range(from, to);
-        return { data: resp.data as T[] | null, error: resp.error };
-      }, PAGE_SIZE),
-    ),
-  );
-  return results.flat();
-}
+  return useMutation({
+    mutationFn: async ({ keepId, removeId }: { keepId: string; removeId: string }) => {
+      const now = new Date().toISOString();
 
-function readMergeHistory(): MergeAction[] {
-  return JSON.parse(localStorage.getItem("merge_history") || "[]");
-}
+      // 1. Get the items
+      const { data: keepVariants } = await supabase.from("variants").select("*").eq("product_id", keepId);
+      const { data: removeVariants } = await supabase.from("variants").select("*").eq("product_id", removeId);
 
-function writeMergeHistory(history: MergeAction[]) {
-  localStorage.setItem("merge_history", JSON.stringify(history));
-}
+      if (!keepVariants || !removeVariants) throw new Error("Could not find variants");
 
-function normalizeText(value: string | null | undefined) {
-  return (value ?? "")
-    .toLowerCase()
-    .replace(/\s+/g, " ")
-    .trim();
-}
+      for (const sourceVariant of removeVariants) {
+        // Try to find a match by SKU or Option Name
+        const matchingVariant = keepVariants.find(kv => 
+            (kv.internal_sku === sourceVariant.internal_sku && kv.internal_sku !== null) ||
+            (kv.option1 === sourceVariant.option1 && kv.option2 === sourceVariant.option2)
+        );
 
-function extractNameParts(name: string) {
-  const parts = name.split(" - ").map((part) => part.trim()).filter(Boolean);
+        if (matchingVariant) {
+          // MATCH FOUND: Move the store links to the 'Keep' variant
+          await supabase.from("channel_listings")
+            .update({ variant_id: matchingVariant.id, updated_at: now })
+            .eq("variant_id", sourceVariant.id);
+
+          // IMPORTANT: Delete the old stock record so we don't have two
+          await supabase.from("inventory").delete().eq("variant_id", sourceVariant.id);
+          
+          // Delete the old variant record
+          await supabase.from("variants").delete().eq("id", sourceVariant.id);
+          
+          // Trigger a sync for the newly merged item
+          await supabase.from("variants").update({ needs_sync: true }).eq("id", matchingVariant.id);
+        } else {
+          // NO MATCH: Just move the variant to the new product
+          await supabase.from("variants").update({ product_id: keepId, updated_at: now }).eq("id", sourceVariant.id);
+          await supabase.from("inventory").update({ product_id: keepId }).eq("variant_id", sourceVariant.id);
+        }
+      }
+
+      // Deactivate the old merged product
+      await supabase.from("products").update({ active: false }).eq("id", removeId);
+      
+      return { keepId };
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["products"] });
+      toast.success("Products unified successfully");
+    }
+  });
+}  const parts = name.split(" - ").map((part) => part.trim()).filter(Boolean);
   if (parts.length < 2) return null;
 
   return {
