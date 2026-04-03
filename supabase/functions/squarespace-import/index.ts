@@ -151,7 +151,23 @@ async function fetchExistingSquarespaceListings(supabase: any, externalVariantId
     rows.push(...(data ?? []));
   }
 
-  return rows;
+  const variants = await fetchRowsByColumn(
+    supabase,
+    "variants",
+    "id",
+    rows.map((row) => row.variant_id),
+    "id, product_id",
+  );
+
+  const productIdByVariantId = new Map<string, string>();
+  for (const variant of variants) {
+    productIdByVariantId.set(variant.id, variant.product_id);
+  }
+
+  return rows.map((row) => ({
+    ...row,
+    product_id: productIdByVariantId.get(row.variant_id) ?? null,
+  }));
 }
 
 async function upsertProducts(supabase: any, squarespaceProducts: SqProduct[]) {
@@ -167,13 +183,38 @@ async function upsertProducts(supabase: any, squarespaceProducts: SqProduct[]) {
     "products",
     "name",
     squarespaceProducts.map((product) => product.name),
-    "id, name",
+    "id, name, active",
   );
 
   const productIdByName = new Map<string, string>();
+  const productIsActiveByName = new Map<string, boolean>();
   for (const product of existingProducts) {
-    if (product.name && !productIdByName.has(product.name)) {
+    if (!product.name) continue;
+
+    const selectedIsActive = productIsActiveByName.get(product.name);
+    if (!productIdByName.has(product.name) || (!selectedIsActive && product.active)) {
       productIdByName.set(product.name, product.id);
+      productIsActiveByName.set(product.name, Boolean(product.active));
+    }
+  }
+
+  const existingListings = await fetchExistingSquarespaceListings(
+    supabase,
+    squarespaceProducts.flatMap((product) => product.variants.map((variant) => variant.id)),
+  );
+
+  const listingByExternalVariantId = new Map<string, {
+    id: string;
+    variant_id: string;
+    product_id: string | null;
+  }>();
+  for (const listing of existingListings) {
+    if (!listingByExternalVariantId.has(listing.channel_variant_id)) {
+      listingByExternalVariantId.set(listing.channel_variant_id, {
+        id: listing.id,
+        variant_id: listing.variant_id,
+        product_id: listing.product_id,
+      });
     }
   }
 
@@ -181,7 +222,12 @@ async function upsertProducts(supabase: any, squarespaceProducts: SqProduct[]) {
     supabase,
     "variants",
     "product_id",
-    existingProducts.map((product) => product.id),
+    [
+      ...existingProducts.map((product) => product.id),
+      ...existingListings
+        .map((listing) => listing.product_id)
+        .filter((productId): productId is string => Boolean(productId)),
+    ],
     "id, product_id, internal_sku",
   );
 
@@ -192,24 +238,13 @@ async function upsertProducts(supabase: any, squarespaceProducts: SqProduct[]) {
     }
   }
 
-  const existingListings = await fetchExistingSquarespaceListings(
-    supabase,
-    squarespaceProducts.flatMap((product) => product.variants.map((variant) => variant.id)),
-  );
-
-  const listingByExternalVariantId = new Map<string, { id: string; variant_id: string }>();
-  for (const listing of existingListings) {
-    if (!listingByExternalVariantId.has(listing.channel_variant_id)) {
-      listingByExternalVariantId.set(listing.channel_variant_id, {
-        id: listing.id,
-        variant_id: listing.variant_id,
-      });
-    }
-  }
-
   for (const sqProduct of squarespaceProducts) {
     const imageUrl = sqProduct.images?.[0]?.url || null;
-    let productId = productIdByName.get(sqProduct.name);
+    const canonicalListing = sqProduct.variants
+      .map((variant) => listingByExternalVariantId.get(variant.id))
+      .find((listing): listing is { id: string; variant_id: string; product_id: string | null } => Boolean(listing));
+
+    let productId = canonicalListing?.product_id ?? productIdByName.get(sqProduct.name);
 
     if (!productId) {
       const { data: product, error: prodErr } = await supabase
@@ -231,19 +266,25 @@ async function upsertProducts(supabase: any, squarespaceProducts: SqProduct[]) {
 
       productId = product.id;
       productIdByName.set(sqProduct.name, product.id);
+      productIsActiveByName.set(sqProduct.name, true);
       productsCreated++;
     } else {
       productsReused++;
     }
 
     for (const sqVariant of sqProduct.variants) {
+      const existingListing = listingByExternalVariantId.get(sqVariant.id);
+      if (existingListing?.product_id) {
+        productId = existingListing.product_id;
+      }
+
       const price = parseFloat(sqVariant.pricing?.basePrice?.value || "0");
       const attrs = sqVariant.attributes || {};
       const optionValues = Object.values(attrs);
       const variantSku = sqVariant.sku || sqVariant.id;
       const variantKey = `${productId}:${variantSku}`;
 
-      let variantId = variantIdByProductAndSku.get(variantKey);
+      let variantId = existingListing?.variant_id ?? variantIdByProductAndSku.get(variantKey);
       if (!variantId) {
         const { data: variant, error: variantErr } = await supabase
           .from("variants")
@@ -273,6 +314,7 @@ async function upsertProducts(supabase: any, squarespaceProducts: SqProduct[]) {
         });
       } else {
         variantsReused++;
+        variantIdByProductAndSku.set(variantKey, variantId);
       }
 
       const listingPayload = {
@@ -285,7 +327,6 @@ async function upsertProducts(supabase: any, squarespaceProducts: SqProduct[]) {
         last_synced_at: new Date().toISOString(),
       };
 
-      const existingListing = listingByExternalVariantId.get(sqVariant.id);
       if (existingListing) {
         const { error: listingErr } = await supabase
           .from("channel_listings")
@@ -313,6 +354,7 @@ async function upsertProducts(supabase: any, squarespaceProducts: SqProduct[]) {
         listingByExternalVariantId.set(listing.channel_variant_id, {
           id: listing.id,
           variant_id: listing.variant_id,
+          product_id: productId,
         });
         listingsCreated++;
       }
