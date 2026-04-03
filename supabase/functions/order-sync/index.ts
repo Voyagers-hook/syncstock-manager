@@ -16,9 +16,13 @@ Deno.serve(async (req) => {
     Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
   );
 
-  const sqApiKey  = Deno.env.get("SQUARESPACE_API_KEY");
-  const ebayAppId = Deno.env.get("EBAY_APP_ID");
+  const ebayAppId  = Deno.env.get("EBAY_APP_ID");
   const ebayCertId = Deno.env.get("EBAY_CERT_ID");
+
+  // Read Squarespace API key from DB (env var fallback)
+  const { data: sqKeyRow } = await supabase
+    .from("sync_secrets").select("value").eq("key", "squarespace_api_key").maybeSingle();
+  const sqApiKey = sqKeyRow?.value ?? Deno.env.get("SQUARESPACE_API_KEY");
 
   // ── time window ─────────────────────────────────────────────────────
   const { data: lastSyncRow } = await supabase
@@ -78,6 +82,8 @@ Deno.serve(async (req) => {
       } catch (err: any) {
         errors.push(`Squarespace order sync error: ${err.message}`);
       }
+    } else {
+      errors.push("Squarespace API key not found in sync_secrets or env");
     }
 
     // ── bookkeeping ───────────────────────────────────────────────────
@@ -324,7 +330,7 @@ async function processEbayTransaction(supabase: any, txn: EbayTxn, sqApiKey?: st
 
 async function processSquarespaceLineItem(
   supabase: any, order: SqOrder, li: SqLineItem,
-  ebayAppId?: string, ebayCertId?: string, _sqApiKey?: string,
+  ebayAppId?: string, ebayCertId?: string, sqApiKey?: string,
 ): Promise<boolean> {
   const { data: dup } = await supabase.from("orders").select("id")
     .eq("platform", "squarespace").eq("platform_order_id", order.id)
@@ -354,6 +360,13 @@ async function processSquarespaceLineItem(
     } catch (_) { /* logged elsewhere */ }
   }
 
+  // push back to Squarespace too (keeps SQ in sync with DB)
+  if (sqApiKey) {
+    try {
+      await pushStockToSquarespace(supabase, listing.variant_id, newStock, sqApiKey);
+    } catch (_) { /* non-fatal */ }
+  }
+
   await supabase.from("orders").insert({
     platform: "squarespace", platform_order_id: order.id,
     product_id: inv.product_id, sku: li.sku || li.variantId,
@@ -376,11 +389,20 @@ async function pushStockToSquarespace(supabase: any, variantId: string, stock: n
 
   for (const l of listings ?? []) {
     if (!l.channel_variant_id) continue;
-    await fetch(`${SQ_API_BASE}/commerce/inventory/adjustments`, {
+    const resp = await fetch(`${SQ_API_BASE}/commerce/inventory/adjustments`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        "User-Agent": "SyncStock/1.0",
+        "Idempotency-Key": crypto.randomUUID(),
+      },
       body: JSON.stringify({ setFiniteOperations: [{ variantId: l.channel_variant_id, quantity: stock }] }),
     });
+    if (!resp.ok) {
+      const body = await resp.text();
+      throw new Error(`SQ push failed [${resp.status}]: ${body.slice(0, 200)}`);
+    }
   }
 }
 
