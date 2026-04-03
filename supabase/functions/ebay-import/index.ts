@@ -17,12 +17,11 @@ Deno.serve(async (req) => {
 
   if (!ebayAppId || !ebayCertId) {
     return new Response(
-      JSON.stringify({ error: "Missing APP_ID or EBAY_CERT_ID" }),
+      JSON.stringify({ error: "Missing EBAY_APP_ID or EBAY_CERT_ID" }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }
 
-  // Read clearFirst flag from request body (sent by QuickSyncButton for full reset)
   const body = await req.json().catch(() => ({}));
   const clearFirst: boolean = body?.clearFirst === true || body?.mode === "full";
 
@@ -41,18 +40,26 @@ Deno.serve(async (req) => {
     }
 
     const userToken = await getOAuthAccessToken(ebayAppId, ebayCertId, storedToken.value, supabase);
-    const listings = await fetchAllEbayListings(userToken, ebayAppId);
-    const stats = await upsertListings(supabase, listings, clearFirst);
+    
+    // If full reset, wipe ONLY eBay data first
+    if (clearFirst) {
+      console.log("Full reset: clearing eBay data only...");
+      await supabase.from("channel_listings").delete().eq("channel", "ebay");
+      console.log("eBay data cleared. Starting fresh import...");
+    }
+
+    const listings = await fetchAllEbayListings(userToken);
+    const stats = await upsertListings(supabase, listings);
 
     await supabase.from("sync_log").insert({
       sync_type: "ebay_import",
       status: "completed",
       details: JSON.stringify(stats),
       source: "edge_function",
-    });
+    }).catch(() => {});
 
     return new Response(
-      JSON.stringify({ success: true, ...stats }),
+      JSON.stringify({ success: true, imported: stats.listings_upserted, ...stats }),
       { headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   } catch (error) {
@@ -64,7 +71,7 @@ Deno.serve(async (req) => {
       status: "failed",
       error_message: msg,
       source: "edge_function",
-    });
+    }).catch(() => {});
 
     return new Response(
       JSON.stringify({ error: msg }),
@@ -80,7 +87,6 @@ async function getOAuthAccessToken(
   supabase: any,
 ): Promise<string> {
   const credentials = btoa(`${appId}:${certId}`);
-
   const resp = await fetch(`${EBAY_API_BASE}/identity/v1/oauth2/token`, {
     method: "POST",
     headers: {
@@ -118,21 +124,19 @@ interface EbayItem {
   title: string;
   sku?: string;
   price: { value: string; currency: string };
-  variations?: { variation: EbayVariation[] };
-  quantity?: number;
+  variations?: EbayVariation[];
   quantityAvailable?: number;
-  sellingStatus?: { quantitySold: number };
 }
 
 interface EbayVariation {
   sku: string;
-  startPrice: { value: string };
-  variationSpecifics: { nameValueList: { name: string; value: string[] }[] };
+  startPrice: string;
+  variantName: string;
   quantity: number;
-  sellingStatus?: { quantitySold: number };
+  quantitySold: number;
 }
 
-async function fetchAllEbayListings(authToken: string, _appId: string): Promise<EbayItem[]> {
+async function fetchAllEbayListings(authToken: string): Promise<EbayItem[]> {
   const allItems: EbayItem[] = [];
   let page = 1;
   const entriesPerPage = 200;
@@ -162,6 +166,7 @@ async function fetchAllEbayListings(authToken: string, _appId: string): Promise<
         "X-EBAY-API-COMPATIBILITY-LEVEL": "967",
         "X-EBAY-API-CALL-NAME": "GetMyeBaySelling",
         "X-EBAY-API-SITEID": "3",
+        "Authorization": `Bearer ${authToken}`,
       },
       body: xmlBody,
     });
@@ -208,8 +213,7 @@ function parseEbayXml(xml: string): EbayItem[] {
       title,
       sku: sku || undefined,
       price: { value: priceStr, currency },
-      quantity,
-      quantityAvailable: quantity - quantitySold,
+      quantityAvailable: Math.max(0, quantity - quantitySold),
     };
 
     const variationsMatch = itemXml.match(/<Variations>([\s\S]*?)<\/Variations>/);
@@ -223,23 +227,23 @@ function parseEbayXml(xml: string): EbayItem[] {
         const varPrice = extractTag(varXml, "StartPrice") || priceStr;
         const varQty = parseInt(extractTag(varXml, "Quantity") || "0");
         const varSold = parseInt(extractTag(varXml, "QuantitySold") || "0");
-        const specifics: { name: string; value: string[] }[] = [];
+        const nameParts: string[] = [];
         const specRegex = /<NameValueList>([\s\S]*?)<\/NameValueList>/g;
         let specMatch;
         while ((specMatch = specRegex.exec(varXml)) !== null) {
-          const name = extractTag(specMatch[1], "Name") || "";
           const value = extractTag(specMatch[1], "Value") || "";
-          specifics.push({ name, value: [value] });
+          if (value) nameParts.push(value);
         }
+        const variantName = nameParts.join(" / ");
         variations.push({
           sku: varSku,
-          startPrice: { value: varPrice },
-          variationSpecifics: { nameValueList: specifics },
+          startPrice: varPrice,
+          variantName,
           quantity: varQty,
-          sellingStatus: { quantitySold: varSold },
+          quantitySold: varSold,
         });
       }
-      if (variations.length) item.variations = { variation: variations };
+      if (variations.length) item.variations = variations;
     }
 
     items.push(item);
@@ -254,188 +258,134 @@ function extractTag(xml: string, tag: string): string | null {
   return match ? match[1].trim() : null;
 }
 
-async function upsertListings(supabase: any, items: EbayItem[], clearFirst: boolean) {
-  let productsCreated = 0;
-  let productsUpdated = 0;
-  let variantsCreated = 0;
-  let listingsCreated = 0;
-  let listingsUpdated = 0;
-
-  // --- FULL RESET: wipe all data before re-importing ---
-  if (clearFirst) {
-    console.log("Full reset: clearing all inventory data...");
-    const nilUUID = "00000000-0000-0000-0000-000000000000";
-    await supabase.from("channel_listings").delete().neq("id", nilUUID);
-    await supabase.from("inventory").delete().neq("variant_id", nilUUID);
-    await supabase.from("variants").delete().neq("id", nilUUID);
-    await supabase.from("products").delete().neq("id", nilUUID);
-    console.log("All data cleared. Starting fresh import...");
-  }
-
-  // Fetch all existing eBay channel listings (after possible clear)
-  const { data: existingListings } = await supabase
-    .from("channel_listings")
-    .select("channel_product_id, channel_sku, variant_id")
-    .eq("channel", "ebay");
-
-  // Build lookup: channelProductId -> [{channel_sku, variant_id}]
-  const existingByProductId = new Map<string, { channel_sku: string; variant_id: string }[]>();
-  for (const l of (existingListings ?? [])) {
-    if (!existingByProductId.has(l.channel_product_id)) {
-      existingByProductId.set(l.channel_product_id, []);
-    }
-    existingByProductId.get(l.channel_product_id)!.push({ channel_sku: l.channel_sku, variant_id: l.variant_id });
-  }
+async function upsertListings(supabase: any, items: EbayItem[]) {
+  let productsUpserted = 0;
+  let listingsUpserted = 0;
 
   for (const item of items) {
     const channelProductId = `v1|${item.itemId}|0`;
-    const existing = existingByProductId.get(channelProductId);
 
-    if (existing && existing.length > 0) {
-      // ── UPDATE existing product: refresh stock + price ──
-      productsUpdated++;
-
-      if (item.variations?.variation?.length) {
-        for (const variation of item.variations.variation) {
-          const variantName = variation.variationSpecifics.nameValueList
-            .map((s) => s.value[0])
-            .join(" / ");
-          const sku = variation.sku || variantName;
-          const match = existing.find((l) => l.channel_sku === sku);
-
-          if (match) {
-            const available = Math.max(
-              0,
-              variation.quantity - (variation.sellingStatus?.quantitySold || 0),
-            );
-            await supabase
-              .from("inventory")
-              .update({ total_stock: available })
-              .eq("variant_id", match.variant_id);
-            await supabase
-              .from("channel_listings")
-              .update({
-                channel_price: parseFloat(variation.startPrice.value),
-                last_synced_at: new Date().toISOString(),
-              })
-              .eq("variant_id", match.variant_id)
-              .eq("channel", "ebay");
-            listingsUpdated++;
-          }
-        }
-      } else {
-        const match = existing[0];
-        if (match) {
-          const available = Math.max(0, item.quantityAvailable || 0);
-          await supabase
-            .from("inventory")
-            .update({ total_stock: available })
-            .eq("variant_id", match.variant_id);
-          await supabase
-            .from("channel_listings")
-            .update({
-              channel_price: parseFloat(item.price.value),
-              last_synced_at: new Date().toISOString(),
-            })
-            .eq("variant_id", match.variant_id)
-            .eq("channel", "ebay");
-          listingsUpdated++;
-        }
-      }
-    } else {
-      // ── CREATE new product ──
-      const { data: product, error: prodErr } = await supabase
-        .from("products")
-        .insert({
+    // Upsert product
+    const { data: product, error: prodErr } = await supabase
+      .from("products")
+      .upsert(
+        {
           name: item.title,
           sku: item.sku || item.itemId,
           status: "active",
           active: true,
-        })
+        },
+        { onConflict: "sku", ignoreDuplicates: false }
+      )
+      .select("id")
+      .single();
+
+    if (prodErr || !product) {
+      // Product might already exist with different sku, try to find it
+      const { data: existing } = await supabase
+        .from("products")
+        .select("id")
+        .eq("sku", item.sku || item.itemId)
+        .single();
+      if (!existing) {
+        console.error(`Failed to upsert product ${item.title}:`, prodErr?.message);
+        continue;
+      }
+      productsUpserted++;
+      await processItemListings(supabase, item, existing.id, channelProductId);
+    } else {
+      productsUpserted++;
+      await processItemListings(supabase, item, product.id, channelProductId);
+    }
+    listingsUpserted++;
+  }
+
+  return {
+    total_ebay_items: items.length,
+    products_upserted: productsUpserted,
+    listings_upserted: listingsUpserted,
+  };
+}
+
+async function processItemListings(supabase: any, item: EbayItem, productId: string, channelProductId: string) {
+  if (item.variations && item.variations.length > 0) {
+    for (const variation of item.variations) {
+      const variantKey = variation.sku || `${item.itemId}-${variation.variantName}`;
+      const available = Math.max(0, variation.quantity - variation.quantitySold);
+      const channelVariantId = variation.variantName || variation.sku || '';
+
+      // Upsert variant
+      const { data: variant } = await supabase
+        .from("variants")
+        .upsert(
+          { product_id: productId, internal_sku: variantKey, option1: variation.variantName },
+          { onConflict: "internal_sku", ignoreDuplicates: false }
+        )
         .select("id")
         .single();
 
-      if (prodErr || !product) {
-        console.error(`Failed to create product for ${item.title}:`, prodErr);
-        continue;
-      }
-      productsCreated++;
+      if (!variant) continue;
 
-      if (item.variations?.variation?.length) {
-        for (const variation of item.variations.variation) {
-          const variantName = variation.variationSpecifics.nameValueList
-            .map((s) => s.value[0])
-            .join(" / ");
+      // Upsert inventory
+      await supabase
+        .from("inventory")
+        .upsert(
+          { variant_id: variant.id, product_id: productId, total_stock: available },
+          { onConflict: "variant_id" }
+        );
 
-          const { data: variant } = await supabase
-            .from("variants")
-            .insert({
-              product_id: product.id,
-              internal_sku: variation.sku || `${item.itemId}-${variantName}`,
-              option1: variantName,
-            })
-            .select("id")
-            .single();
-
-          if (!variant) continue;
-          variantsCreated++;
-
-          const available = variation.quantity - (variation.sellingStatus?.quantitySold || 0);
-          await supabase.from("inventory").insert({
-            variant_id: variant.id,
-            product_id: product.id,
-            total_stock: Math.max(0, available),
-          });
-
-          await supabase.from("channel_listings").insert({
+      // Upsert channel_listing using the new unique constraint
+      await supabase
+        .from("channel_listings")
+        .upsert(
+          {
             variant_id: variant.id,
             channel: "ebay",
-            channel_sku: variation.sku || variantName,
-            channel_price: parseFloat(variation.startPrice.value),
+            channel_sku: variation.sku || variation.variantName,
+            channel_price: parseFloat(variation.startPrice),
             channel_product_id: channelProductId,
-            channel_variant_id: variantName,
+            channel_variant_id: channelVariantId,
             last_synced_at: new Date().toISOString(),
-          });
-          listingsCreated++;
-        }
-      } else {
-        const { data: variant } = await supabase
-          .from("variants")
-          .insert({
-            product_id: product.id,
-            internal_sku: item.sku || item.itemId,
-          })
-          .select("id")
-          .single();
+          },
+          { onConflict: "channel,channel_product_id,channel_variant_id" }
+        );
+    }
+  } else {
+    // Non-varianted item
+    const variantKey = item.sku || item.itemId;
+    const available = Math.max(0, item.quantityAvailable || 0);
 
-        if (!variant) continue;
-        variantsCreated++;
+    const { data: variant } = await supabase
+      .from("variants")
+      .upsert(
+        { product_id: productId, internal_sku: variantKey },
+        { onConflict: "internal_sku", ignoreDuplicates: false }
+      )
+      .select("id")
+      .single();
 
-        await supabase.from("inventory").insert({
-          variant_id: variant.id,
-          product_id: product.id,
-          total_stock: Math.max(0, item.quantityAvailable || 0),
-        });
+    if (!variant) return;
 
-        await supabase.from("channel_listings").insert({
+    await supabase
+      .from("inventory")
+      .upsert(
+        { variant_id: variant.id, product_id: productId, total_stock: available },
+        { onConflict: "variant_id" }
+      );
+
+    await supabase
+      .from("channel_listings")
+      .upsert(
+        {
           variant_id: variant.id,
           channel: "ebay",
           channel_sku: item.sku || item.itemId,
           channel_price: parseFloat(item.price.value),
           channel_product_id: channelProductId,
+          channel_variant_id: "",  // empty string for non-varianted (NOT null — avoids unique constraint NULL bypass)
           last_synced_at: new Date().toISOString(),
-        });
-        listingsCreated++;
-      }
-    }
+        },
+        { onConflict: "channel,channel_product_id,channel_variant_id" }
+      );
   }
-
-  return {
-    total_ebay_items: items.length,
-    products_created: productsCreated,
-    products_updated: productsUpdated,
-    variants_created: variantsCreated,
-    listings_created: listingsCreated,
-    listings_updated: listingsUpdated,
-  };
 }
