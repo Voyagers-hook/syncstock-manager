@@ -24,7 +24,7 @@ Deno.serve(async (req) => {
 
   // Read clearFirst flag from request body (sent by QuickSyncButton for full reset)
   const body = await req.json().catch(() => ({}));
-  const clearFirst: boolean = body?.clearFirst === true;
+  const clearFirst: boolean = body?.clearFirst === true || body?.mode === "full";
 
   try {
     const { data: storedToken } = await supabase

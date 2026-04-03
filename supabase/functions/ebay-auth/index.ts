@@ -103,14 +103,23 @@ Deno.serve(async (req) => {
         );
     }
 
-    return new Response(
-      JSON.stringify({
-        success: true,
-        message: "eBay connected! You can close this tab and run the eBay sync from your dashboard.",
-        refresh_token_expires_days: tokenData.refresh_token_expires_in ? Math.round(tokenData.refresh_token_expires_in / 86400) : null,
-      }),
-      { headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 200 }
-    );
+    const expiryDays = tokenData.refresh_token_expires_in ? Math.round(tokenData.refresh_token_expires_in / 86400) : 365;
+    const html = `<!DOCTYPE html><html><head><title>eBay Connected</title>
+<style>body{font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#0f172a;color:#f1f5f9}
+.card{text-align:center;padding:2rem;background:#1e293b;border-radius:1rem;border:1px solid #22c55e}
+h2{color:#22c55e;margin-bottom:0.5rem}p{color:#94a3b8;margin:0.5rem 0}
+button{margin-top:1rem;padding:0.5rem 1.5rem;background:#22c55e;color:#000;border:none;border-radius:0.5rem;cursor:pointer;font-size:1rem}
+</style></head><body>
+<div class="card">
+  <h2>✓ eBay Connected!</h2>
+  <p>Your eBay account has been linked.</p>
+  <p>Refresh token valid for ~${expiryDays} days.</p>
+  <p>You can close this tab and run a Full Catalogue Reset from the dashboard.</p>
+  <button onclick="window.close()">Close Tab</button>
+</div>
+<script>setTimeout(()=>window.close(),3000);</script>
+</body></html>`;
+    return new Response(html, { headers: { ...corsHeaders, "Content-Type": "text/html" }, status: 200 });
   } catch (error) {
     const msg = error instanceof Error ? error.message : "Unknown error";
     return new Response(

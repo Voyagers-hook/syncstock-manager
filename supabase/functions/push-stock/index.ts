@@ -88,7 +88,7 @@ async function pushEbayUpdate(listing: any, stock?: number, price?: number, toke
 }
 
 async function pushSquarespaceUpdate(listing: any, stock?: number, price?: number) {
-  const apiKey = Deno.env.get("SQUARESPACE_API_KEY");
+  const apiKey = Deno.env.get("SQUARESPACE_API");
   if (stock !== undefined) {
     await fetch(`${SQ_API_BASE}/commerce/inventory/adjustments`, {
       method: "POST",
