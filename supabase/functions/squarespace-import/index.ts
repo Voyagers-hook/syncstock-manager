@@ -224,7 +224,7 @@ Deno.serve(async (req) => {
         total_stock: v.stock,
       }));
       for (let i = 0; i < invRows.length; i += 500) {
-        await supabase.from("inventory").insert(invRows.slice(i, i + 500));
+        await supabase.from("inventory").upsert(invRows.slice(i, i + 500), { onConflict: "variant_id", ignoreDuplicates: false });
       }
     }
 

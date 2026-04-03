@@ -322,7 +322,7 @@ async function bulkInsert(supabase: ReturnType<typeof createClient>, items: Ebay
   // Actually we just insert since we cleared old data first
   const CHUNK = 100;
   for (let i = 0; i < invRows.length; i += CHUNK) {
-    await supabase.from("inventory").insert(invRows.slice(i, i + CHUNK));
+    await supabase.from("inventory").upsert(invRows.slice(i, i + CHUNK), { onConflict: "variant_id", ignoreDuplicates: false });
   }
   for (let i = 0; i < listRows.length; i += CHUNK) {
     await supabase.from("channel_listings").insert(listRows.slice(i, i + CHUNK));
