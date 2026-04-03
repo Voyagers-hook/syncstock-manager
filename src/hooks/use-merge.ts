@@ -160,6 +160,7 @@ function getVariantKeys(variant: Pick<VariantRow, "option1" | "option2">) {
   const keys = new Set<string>();
   if (full) keys.add(`full:${full}`);
   if (simple) keys.add(`simple:${simple}`);
+  if (!keys.size) keys.add("blank");
   return Array.from(keys);
 }
 

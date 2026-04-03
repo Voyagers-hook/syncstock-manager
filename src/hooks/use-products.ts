@@ -252,18 +252,35 @@ export function useUpdateInventory() {
       variantId: string;
       stock: number;
     }) => {
+      const updatedAt = new Date().toISOString();
+
       const { error } = await supabase
         .from("inventory")
-        .update({ total_stock: stock })
+        .update({ total_stock: stock, updated_at: updatedAt })
         .eq("id", inventoryId);
       if (error) throw error;
 
-      await supabase
+      const { error: variantError } = await supabase
         .from("variants")
-        .update({ needs_sync: true, updated_at: new Date().toISOString() })
+        .update({ needs_sync: true, updated_at: updatedAt })
         .eq("id", variantId);
+      if (variantError) throw variantError;
+
+      const { data, error: syncError } = await supabase.functions.invoke("push-stock", {
+        body: { variantId, stock },
+      });
+
+      if (syncError) {
+        throw new Error(`Stock saved locally but failed to push to channels: ${syncError.message}`);
+      }
+
+      if (data?.failed) {
+        throw new Error(`Stock saved locally but failed on ${data.failed} channel sync${data.failed === 1 ? "" : "s"}.`);
+      }
+
+      return data;
     },
-    onSuccess: () => {
+    onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ["products"] });
     },
   });
