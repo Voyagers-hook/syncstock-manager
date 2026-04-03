@@ -17,14 +17,11 @@ Deno.serve(async (req) => {
 
     const appId = Deno.env.get("EBAY_APP_ID");
     const certId = Deno.env.get("EBAY_CERT_ID");
-    if (!appId || !certId) return json({ error: "Missing EBAY_APP_ID or EBAY_CERT_ID" }, 500);
-
-    const body = await req.json().catch(() => ({} as Record<string, unknown>));
-    const clearFirst = body?.clearFirst === true || body?.mode === "full";
+    if (!appId || !certId) return new Response(JSON.stringify({ error: "Missing Keys" }), { status: 500, headers: cors });
 
     const { data: tokenRow } = await supabase
       .from("sync_secrets").select("value").eq("key", "ebay_refresh_token").single();
-    if (!tokenRow?.value) return json({ error: "No eBay refresh token" }, 400);
+    if (!tokenRow?.value) return new Response(JSON.stringify({ error: "No Token" }), { status: 400, headers: cors });
 
     const tokenResp = await fetch(`${EBAY}/identity/v1/oauth2/token`, {
       method: "POST",
@@ -35,69 +32,38 @@ Deno.serve(async (req) => {
       body: new URLSearchParams({
         grant_type: "refresh_token",
         refresh_token: tokenRow.value,
-        scope: "https://api.ebay.com/oauth/api_scope https://api.ebay.com/oauth/api_scope/sell.inventory https://api.ebay.com/oauth/api_scope/sell.fulfillment https://api.ebay.com/oauth/api_scope/sell.marketing https://api.ebay.com/oauth/api_scope/sell.account",
+        scope: "https://api.ebay.com/oauth/api_scope https://api.ebay.com/oauth/api_scope/sell.inventory",
       }),
     });
     const tokenData = await tokenResp.json();
-    if (!tokenData.access_token) return json({ error: "eBay token refresh failed" }, 500);
+    const accessToken = tokenData.access_token;
 
-    const accessToken: string = tokenData.access_token;
+    // 1. Fetch from eBay
     const items = await fetchAllListings(accessToken);
 
-    if (clearFirst) {
-      await supabase.from("channel_listings").delete().eq("channel", "ebay");
-      const { data: orphanedVariants } = await supabase.rpc("get_orphaned_variant_ids");
-      if (orphanedVariants && orphanedVariants.length > 0) {
-        const orphanIds = orphanedVariants.map((r: any) => r.id);
-        for (let i = 0; i < orphanIds.length; i += 20) {
-          await supabase.from("inventory").delete().in("variant_id", orphanIds.slice(i, i + 20));
-          await supabase.from("variants").delete().in("id", orphanIds.slice(i, i + 20));
-        }
-      }
-      const { data: orphanedProducts } = await supabase.rpc("get_orphaned_product_ids");
-      if (orphanedProducts && orphanedProducts.length > 0) {
-        const orphanIds = orphanedProducts.map((r: any) => r.id);
-        for (let i = 0; i < orphanIds.length; i += 20) {
-          await supabase.from("products").delete().in("id", orphanIds.slice(i, i + 20));
-        }
-      }
-    }
+    // 2. Process in BULK to prevent Timeouts (EarlyDrop)
+    const stats = await bulkUpsert(supabase, items);
 
-    const stats = await bulkInsert(supabase, items);
-    return json({ success: true, ...stats });
+    return new Response(JSON.stringify({ success: true, ...stats }), { headers: { ...cors, "Content-Type": "application/json" } });
 
-  } catch (err: unknown) {
-    return json({ error: String(err) }, 500);
+  } catch (err) {
+    return new Response(JSON.stringify({ error: String(err) }), { status: 500, headers: cors });
   }
 });
-
-function json(data: unknown, status = 200) {
-  return new Response(JSON.stringify(data), {
-    status, headers: { ...cors, "Content-Type": "application/json" },
-  });
-}
 
 function xtag(xml: string, name: string): string | null {
   const m = xml.match(new RegExp(`<${name}[^>]*>([^<]*)</${name}>`));
   return m ? m[1].trim() : null;
 }
 
-type EbayVariation = { sku: string; price: string; name: string; qty: number; sold: number };
-type EbayItem = {
-  itemId: string; title: string; sku: string;
-  price: string; qty: number; sold: number;
-  variations: EbayVariation[];
-};
-
-async function fetchAllListings(token: string): Promise<EbayItem[]> {
-  const all: EbayItem[] = [];
+async function fetchAllListings(token: string) {
+  const all = [];
   let page = 1;
-  for (;;) {
+  while (true) {
     const xml = `<?xml version="1.0" encoding="utf-8"?>
 <GetMyeBaySellingRequest xmlns="urn:ebay:apis:eBLBaseComponents">
   <RequesterCredentials><eBayAuthToken>${token}</eBayAuthToken></RequesterCredentials>
   <ActiveList>
-    <Sort>ItemID</Sort>
     <Pagination><EntriesPerPage>200</EntriesPerPage><PageNumber>${page}</PageNumber></Pagination>
   </ActiveList>
   <DetailLevel>ReturnAll</DetailLevel>
@@ -106,10 +72,9 @@ async function fetchAllListings(token: string): Promise<EbayItem[]> {
     const r = await fetch(`${EBAY}/ws/api.dll`, {
       method: "POST",
       headers: {
-        "Content-Type": "text/xml",
-        "X-EBAY-API-COMPATIBILITY-LEVEL": "967",
         "X-EBAY-API-CALL-NAME": "GetMyeBaySelling",
         "X-EBAY-API-SITEID": "3",
+        "Content-Type": "text/xml",
       },
       body: xml,
     });
@@ -123,125 +88,98 @@ async function fetchAllListings(token: string): Promise<EbayItem[]> {
   return all;
 }
 
-function parseXml(xml: string): EbayItem[] {
-  const items: EbayItem[] = [];
+function parseXml(xml: string) {
+  const items = [];
   const re = /<Item>([\s\S]*?)<\/Item>/g;
   let m;
   while ((m = re.exec(xml)) !== null) {
     const x = m[1];
     const itemId = xtag(x, "ItemID");
     const title = xtag(x, "Title");
-    if (!itemId || !title) continue;
-    const priceStr = xtag(x, "CurrentPrice") ?? "0";
     const sku = xtag(x, "SKU") || itemId;
+    const price = xtag(x, "CurrentPrice") || "0";
     const qty = parseInt(xtag(x, "Quantity") ?? "0");
-    const sold = parseInt(xtag(x, "QuantitySold") ?? "0");
-    const variations: EbayVariation[] = [];
+
+    const variations = [];
     const vblock = x.match(/<Variations>([\s\S]*?)<\/Variations>/);
     if (vblock) {
       const vre = /<Variation>([\s\S]*?)<\/Variation>/g;
       let vm;
       while ((vm = vre.exec(vblock[1])) !== null) {
         const vx = vm[1];
-        const vSku = xtag(vx, "SKU") ?? "";
-        const vPrice = xtag(vx, "StartPrice") ?? priceStr;
+        const vSku = xtag(vx, "SKU") || `${itemId}-${xtag(vx, "StartPrice")}`;
         const vQty = parseInt(xtag(vx, "Quantity") ?? "0");
-        const vSold = parseInt(xtag(vx, "QuantitySold") ?? "0");
-        const parts: string[] = [];
+        const parts = [];
         const nvre = /<NameValueList>([\s\S]*?)<\/NameValueList>/g;
         let nvm;
         while ((nvm = nvre.exec(vx)) !== null) {
           const val = xtag(nvm[1], "Value");
           if (val) parts.push(val);
         }
-        variations.push({ sku: vSku, price: vPrice, name: parts.join(" / "), qty: vQty, sold: vSold });
+        variations.push({ sku: vSku, price: xtag(vx, "StartPrice") || price, name: parts.join(" / "), qty: vQty });
       }
     }
-    items.push({ itemId, title, sku, price: priceStr, qty, sold, variations });
+    items.push({ itemId, title, sku, price, qty, variations });
   }
   return items;
 }
 
-async function bulkInsert(supabase: any, items: EbayItem[]) {
+async function bulkUpsert(supabase: any, items: any[]) {
+  const productRows = items.map(i => ({ name: i.title, sku: i.sku, active: true, status: 'active' }));
+  
+  // 1. Bulk Upsert Products
+  await supabase.from("products").upsert(productRows, { onConflict: 'sku' });
+  const { data: prods } = await supabase.from("products").select("id, sku");
+  const prodMap = new Map(prods.map((p: any) => [p.sku, p.id]));
+
+  const variantRows = [];
+  const invRows = [];
+  const listRows = [];
   const now = new Date().toISOString();
-  const allSkus = [...new Set(items.map(i => i.sku))];
-  const { data: existingProds } = await supabase.from("products").select("id, sku").in("sku", allSkus);
-  const existingSkuMap = new Map<string, string>((existingProds ?? []).map((p: any) => [p.sku, p.id]));
-  const newProdRows = items
-    .filter(item => !existingSkuMap.has(item.sku))
-    .map(item => ({ name: item.title, sku: item.sku, active: true }));
-  const uniqueNewProds = [...new Map(newProdRows.map((p: any) => [p.sku, p])).values()];
 
-  if (uniqueNewProds.length > 0) {
-    const { data: inserted } = await supabase.from("products").insert(uniqueNewProds).select("id, sku");
-    for (const p of (inserted ?? [])) existingSkuMap.set(p.sku, p.id);
-  }
-
-  const productBySku = existingSkuMap;
-  const varRows: any[] = [];
   for (const item of items) {
-    const productId = productBySku.get(item.sku);
-    if (!productId) continue;
-    if (item.variations.length > 0) {
-      for (const v of item.variations) {
-        const iSku = v.sku || `${item.itemId}-${v.name}`;
-        varRows.push({ product_id: productId, internal_sku: iSku, option1: v.name || null });
-      }
-    } else {
-      varRows.push({ product_id: productId, internal_sku: item.itemId, option1: null });
+    const pId = prodMap.get(item.sku);
+    if (!pId) continue;
+
+    const vars = item.variations.length > 0 ? item.variations : [{ sku: item.sku, name: null, qty: item.qty, price: item.price }];
+
+    for (const v of vars) {
+      variantRows.push({ product_id: pId, internal_sku: v.sku, option1: v.name });
     }
   }
 
-  const seenVarSkus = new Set<string>();
-  const dedupedVarRows = varRows.filter(r => {
-    if (seenVarSkus.has(r.internal_sku)) return false;
-    seenVarSkus.add(r.internal_sku);
-    return true;
-  });
+  // 2. Bulk Upsert Variants
+  await supabase.from("variants").upsert(variantRows, { onConflict: 'internal_sku' });
+  const { data: vrnts } = await supabase.from("variants").select("id, internal_sku");
+  const varMap = new Map(vrnts.map((v: any) => [v.internal_sku, v.id]));
 
-  const variantByISku = new Map<string, string>();
-  const allISkus = dedupedVarRows.map(r => r.internal_sku);
-  for (let i = 0; i < allISkus.length; i += 150) {
-    const chunk = allISkus.slice(i, i + 150);
-    const { data: existing } = await supabase.from("variants").select("id, internal_sku").in("internal_sku", chunk);
-    for (const v of (existing ?? [])) variantByISku.set(v.internal_sku, v.id);
-  }
-
-  for (const varRow of dedupedVarRows) {
-    if (variantByISku.has(varRow.internal_sku)) continue;
-    const { data: inserted } = await supabase.from("variants").insert(varRow).select("id, internal_sku");
-    if (inserted && inserted.length > 0) variantByISku.set(inserted[0].internal_sku, inserted[0].id);
-  }
-
-  const invRows: any[] = [];
-  const listRows: any[] = [];
   for (const item of items) {
-    const cpid = `v1|${item.itemId}|0`;
-    if (item.variations.length > 0) {
-      for (const v of item.variations) {
-        const iSku = v.sku || `${item.itemId}-${v.name}`;
-        const varId = variantByISku.get(iSku);
-        const prodId = productBySku.get(item.sku);
-        if (!varId || !prodId) continue;
-        invRows.push({ variant_id: varId, product_id: prodId, total_stock: Math.max(0, v.qty - v.sold) });
-        listRows.push({ variant_id: varId, channel: "ebay", channel_sku: v.sku || v.name, channel_price: parseFloat(v.price), channel_product_id: cpid, channel_variant_id: v.name || v.sku || iSku, last_synced_at: now });
-      }
-    } else {
-      const iSku = item.itemId;
-      const varId = variantByISku.get(iSku);
-      const prodId = productBySku.get(item.sku);
-      if (!varId || !prodId) continue;
-      invRows.push({ variant_id: varId, product_id: prodId, total_stock: Math.max(0, item.qty - item.sold) });
-      listRows.push({ variant_id: varId, channel: "ebay", channel_sku: item.sku, channel_price: parseFloat(item.price), channel_product_id: cpid, channel_variant_id: "", last_synced_at: now });
+    const pId = prodMap.get(item.sku);
+    const vars = item.variations.length > 0 ? item.variations : [{ sku: item.sku, name: null, qty: item.qty, price: item.price }];
+
+    for (const v of vars) {
+      const vId = varMap.get(v.sku);
+      if (!vId) continue;
+
+      invRows.push({ variant_id: vId, product_id: pId, total_stock: v.qty });
+      listRows.push({
+        variant_id: vId,
+        channel: "ebay",
+        channel_sku: v.sku,
+        channel_price: parseFloat(v.price),
+        channel_product_id: `v1|${item.itemId}|0`,
+        channel_variant_id: v.name || "",
+        last_synced_at: now
+      });
     }
   }
 
-  for (const row of invRows) {
-    await supabase.from("inventory").upsert(row, { onConflict: 'variant_id' });
-  }
-  for (let i = 0; i < listRows.length; i += 50) {
-    await supabase.from("channel_listings").insert(listRows.slice(i, i + 50));
+  // 3. Bulk Upsert Inventory and Listings
+  // Processing in chunks of 100 to stay very safe within memory limits
+  for (let i = 0; i < invRows.length; i += 100) {
+    await supabase.from("inventory").upsert(invRows.slice(i, i + 100), { onConflict: 'variant_id' });
+    await supabase.from("channel_listings").upsert(listRows.slice(i, i + 100), { onConflict: 'channel_product_id,channel_variant_id' });
   }
 
-  return { total_items: items.length, variants: dedupedVarRows.length };
+  return { items_total: items.length, variants_total: variantRows.length };
 }
