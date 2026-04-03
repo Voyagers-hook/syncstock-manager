@@ -195,6 +195,7 @@ export function useUpdateChannelPrice() {
       variantId: string;
       price: number;
     }) => {
+      // 1. Save price to DB
       const { error } = await supabase
         .from("channel_listings")
         .update({ channel_price: price, updated_at: new Date().toISOString() })
@@ -203,8 +204,26 @@ export function useUpdateChannelPrice() {
 
       await supabase
         .from("variants")
-        .update({ needs_sync: true, updated_at: new Date().toISOString() })
+        .update({ needs_sync: false, updated_at: new Date().toISOString() })
         .eq("id", variantId);
+
+      // 2. Push price to both platforms immediately
+      const { data, error: pushError } = await supabase.functions.invoke("push-stock", {
+        body: { variantId, price },
+      });
+
+      if (pushError) {
+        console.warn("push-stock price error:", pushError.message);
+        throw new Error(`Price saved but failed to push to platforms: ${pushError.message}`);
+      }
+
+      const failedChannels = (data?.results ?? [])
+        .filter((r: any) => r.status === "error")
+        .map((r: any) => `${r.channel}: ${r.message ?? "unknown error"}`);
+
+      if (failedChannels.length > 0) {
+        throw new Error(`Price saved but push failed — ${failedChannels.join("; ")}`);
+      }
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["products"] });
@@ -292,3 +311,4 @@ export function useUpdateInventory() {
     },
   });
 }
+
