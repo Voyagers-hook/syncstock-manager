@@ -40,6 +40,8 @@ export function useMergeProducts() {
           await supabase.from("variants").delete().eq("id", rv.id);
         } else {
           await supabase.from("variants").update({ product_id: keepId }).eq("id", rv.id);
+          // FIX: also update inventory so it stays linked to the kept product (prevents orphaned stock)
+          await supabase.from("inventory").update({ product_id: keepId }).eq("variant_id", rv.id);
         }
       }
       await supabase.from("products").update({ active: false }).eq("id", removeId);
