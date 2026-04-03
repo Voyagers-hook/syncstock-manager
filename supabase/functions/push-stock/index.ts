@@ -104,6 +104,12 @@ async function pushEbayUpdate(
 
   if (!priceXml && !stockXml) return "nothing to update";
 
+  // Only include SKU if this is a variation-managed listing
+  // (channel_variant_id that is not empty/numeric-only means it's a variation)
+  const isVariation = listing.channel_variant_id &&
+    listing.channel_variant_id !== "" &&
+    !/^\d+$/.test(listing.channel_variant_id);
+
   const xml = `<?xml version="1.0" encoding="utf-8"?>
 <ReviseInventoryStatusRequest xmlns="urn:ebay:apis:eBLBaseComponents">
   <RequesterCredentials>
@@ -111,7 +117,7 @@ async function pushEbayUpdate(
   </RequesterCredentials>
   <InventoryStatus>
     <ItemID>${itemId}</ItemID>
-    ${listing.channel_sku ? `<SKU>${listing.channel_sku}</SKU>` : ""}
+    ${isVariation && listing.channel_sku ? `<SKU>${listing.channel_sku}</SKU>` : ""}
     ${stockXml}
     ${priceXml}
   </InventoryStatus>
@@ -154,23 +160,18 @@ async function pushSquarespaceUpdate(
   const variantId = listing.channel_variant_id;
   if (!variantId) throw new Error("Missing Squarespace variant ID");
 
-  // Update stock — use the correct Squarespace Commerce inventory endpoint
+  // Update stock via Squarespace inventory adjustments endpoint
   if (stock !== undefined) {
-    const resp = await fetch(`${SQ_API_BASE}/commerce/inventory`, {
+    const resp = await fetch(`${SQ_API_BASE}/commerce/inventory/adjustments`, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
         "User-Agent": "SyncStock/1.0",
+        "Idempotency-Key": crypto.randomUUID(),
       },
       body: JSON.stringify({
-        changes: [
-          {
-            variantId,
-            type: "SET_FINITE",
-            value: stock,
-          },
-        ],
+        setFiniteOperations: [{ variantId, quantity: stock }],
       }),
     });
 
