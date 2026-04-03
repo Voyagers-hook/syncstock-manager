@@ -315,6 +315,9 @@ async function upsertProducts(supabase: any, squarespaceProducts: SqProduct[]) {
       } else {
         variantsReused++;
         variantIdByProductAndSku.set(variantKey, variantId);
+        // FIX: update inventory to reflect latest Squarespace stock quantity
+        const stock = sqVariant.stock?.unlimited ? 999 : (sqVariant.stock?.quantity ?? 0);
+        await supabase.from("inventory").update({ total_stock: stock }).eq("variant_id", variantId);
       }
 
       const listingPayload = {
