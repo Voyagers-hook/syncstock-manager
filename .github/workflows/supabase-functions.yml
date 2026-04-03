@@ -29,5 +29,6 @@ jobs:
           supabase functions deploy push-stock --no-verify-jwt
           supabase functions deploy ebay-auth --no-verify-jwt
           supabase functions deploy order-sync --no-verify-jwt
+          supabase functions deploy fix-inventory --no-verify-jwt
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
