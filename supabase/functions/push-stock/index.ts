@@ -35,6 +35,11 @@ Deno.serve(async (req) => {
     Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
   );
 
+  // Read Squarespace API key from DB (env var fallback)
+  const { data: sqKeyRow } = await supabase
+    .from("sync_secrets").select("value").eq("key", "squarespace_api_key").maybeSingle();
+  const sqApiKey = sqKeyRow?.value ?? Deno.env.get("SQUARESPACE_API_KEY") ?? Deno.env.get("SQUARESPACE_API");
+
   // Get all channel_listings for this variant
   const { data: listings, error: listErr } = await supabase
     .from("channel_listings")
@@ -49,7 +54,6 @@ Deno.serve(async (req) => {
   }
 
   if (!listings || listings.length === 0) {
-    // No channel listings — just update DB, no push needed (not an error)
     return new Response(JSON.stringify({ ok: true, results: [], note: "No channel listings for this variant" }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
@@ -67,7 +71,8 @@ Deno.serve(async (req) => {
         const ebayResult = await pushEbayUpdate(listing, stock, price, ebayToken!);
         results.push({ channel: "ebay", status: "success", message: ebayResult });
       } else if (listing.channel === "squarespace") {
-        await pushSquarespaceUpdate(listing, stock, price);
+        if (!sqApiKey) throw new Error("Squarespace API key not found in sync_secrets or env");
+        await pushSquarespaceUpdate(listing, stock, price, sqApiKey);
         results.push({ channel: "squarespace", status: "success" });
       }
     } catch (err: any) {
@@ -80,7 +85,7 @@ Deno.serve(async (req) => {
   return new Response(
     JSON.stringify({ ok: !anyFailed, results }),
     {
-      status: anyFailed ? 207 : 200, // 207 = Multi-Status (partial success)
+      status: anyFailed ? 207 : 200,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     }
   );
@@ -94,7 +99,6 @@ async function pushEbayUpdate(
   price: number | undefined,
   token: string
 ): Promise<string> {
-  // Extract the numeric item ID from channel_product_id (e.g. "v1|356844875428|0" → "356844875428")
   const itemId = listing.channel_product_id?.replace(/^v1\|/, "").replace(/\|.*$/, "") ||
     listing.channel_product_id;
 
@@ -105,8 +109,6 @@ async function pushEbayUpdate(
 
   if (!priceXml && !stockXml) return "nothing to update";
 
-  // Only include SKU if this is a variation-managed listing
-  // (channel_variant_id that is not empty/numeric-only means it's a variation)
   const isVariation = listing.channel_variant_id &&
     listing.channel_variant_id !== "" &&
     !/^\d+$/.test(listing.channel_variant_id);
@@ -138,7 +140,6 @@ async function pushEbayUpdate(
 
   const respText = await resp.text();
 
-  // Check for eBay-level errors in the XML response
   if (respText.includes("<Ack>Failure</Ack>") || respText.includes("<Ack>PartialFailure</Ack>")) {
     const errMatch = respText.match(/<LongMessage>(.*?)<\/LongMessage>/);
     const errMsg = errMatch ? errMatch[1] : "eBay API returned Failure";
@@ -153,15 +154,12 @@ async function pushEbayUpdate(
 async function pushSquarespaceUpdate(
   listing: any,
   stock: number | undefined,
-  price: number | undefined
+  price: number | undefined,
+  apiKey: string
 ): Promise<void> {
-  const apiKey = Deno.env.get("SQUARESPACE_API");
-  if (!apiKey) throw new Error("SQUARESPACE_API secret not set");
-
   const variantId = listing.channel_variant_id;
   if (!variantId) throw new Error("Missing Squarespace variant ID");
 
-  // Update stock via Squarespace inventory adjustments endpoint
   if (stock !== undefined) {
     const resp = await fetch(`${SQ_API_BASE}/commerce/inventory/adjustments`, {
       method: "POST",
@@ -182,7 +180,6 @@ async function pushSquarespaceUpdate(
     }
   }
 
-  // Update price
   if (price !== undefined) {
     const productId = listing.channel_product_id;
     if (!productId) throw new Error("Missing Squarespace product ID for price update");
