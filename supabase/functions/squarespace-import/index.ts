@@ -17,15 +17,12 @@ Deno.serve(async (req) => {
   const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
   const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-  let sqApiKey = Deno.env.get("SQUARESPACE_API_KEY");
+  // Read Squarespace API key from sync_secrets DB (preferred) or env fallback
+  const { data: secretRow } = await supabase
+    .from("sync_secrets").select("value").eq("key", "squarespace_api_key").single();
+  const sqApiKey = secretRow?.value ?? Deno.env.get("SQUARESPACE_API_KEY") ?? null;
   if (!sqApiKey) {
-    // Fall back to sync_secrets table
-    const { data: secretRow } = await supabase
-      .from("sync_secrets").select("value").eq("key", "squarespace_api_key").single();
-    sqApiKey = secretRow?.value ?? null;
-  }
-  if (!sqApiKey) {
-    return new Response(JSON.stringify({ error: "Missing SQUARESPACE_API_KEY in env and sync_secrets" }), {
+    return new Response(JSON.stringify({ error: "Missing squarespace_api_key in sync_secrets and env" }), {
       status: 500,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
