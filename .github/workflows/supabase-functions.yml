@@ -22,6 +22,17 @@ jobs:
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
 
+      - name: Push secrets to Supabase edge functions
+        run: |
+          supabase secrets set \
+            EBAY_APP_ID="${{ secrets.EBAY_APP_ID }}" \
+            EBAY_CERT_ID="${{ secrets.EBAY_CERT_ID }}" \
+            EBAY_DEV_ID="${{ secrets.EBAY_DEV_ID }}" \
+            EBAY_RUNAME="${{ secrets.EBAY_RUNAME }}" \
+            SUPABASE_SERVICE_ROLE_KEY="${{ secrets.SUPABASE_SERVICE_KEY }}"
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+
       - name: Deploy edge functions (JWT verification OFF)
         run: |
           supabase functions deploy ebay-import --no-verify-jwt
