@@ -54,11 +54,11 @@ serve(async (req) => {
           }
         } else if (invRows.length > 1) {
           // Multiple inventory rows → keep MAX, delete rest
-          const maxStock = Math.max(...invRows.map((r: any) => r.stock ?? 0));
+          const maxStock = Math.max(...invRows.map((r: any) => r.total_stock ?? 0));
           const keepRow = invRows[0];
 
           // Update the kept row to MAX
-          await sb.from("inventory").update({ stock: maxStock }).eq("id", keepRow.id);
+          await sb.from("inventory").update({ total_stock: maxStock }).eq("id", keepRow.id);
 
           // Delete the extras
           for (let i = 1; i < invRows.length; i++) {
