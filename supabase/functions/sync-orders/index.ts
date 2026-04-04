@@ -45,7 +45,7 @@ Deno.serve(async (req) => {
           }
         }
 
-        await supabase.from("processed_orders").insert({ channel: "ebay", order_id: order.orderId }).catch(() => {});
+        await supabase.from("sync_secrets").upsert({ key: `processed_ebay_${order.orderId}`, value: "1" }, { onConflict: "key" });
         stats.ebay_orders++;
       }
 
