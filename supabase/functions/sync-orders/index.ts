@@ -83,7 +83,7 @@ Deno.serve(async (req) => {
           }
         }
 
-        await supabase.from("processed_orders").insert({ channel: "squarespace", order_id: order.id }).catch(() => {});
+        await supabase.from("sync_secrets").upsert({ key: `processed_sq_${order.id}`, value: "1" }, { onConflict: "key" });
         stats.sq_orders++;
       }
 
