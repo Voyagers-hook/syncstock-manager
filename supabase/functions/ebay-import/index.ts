@@ -208,7 +208,7 @@ function parseXml(xml: string): EbayItem[] {
 
 // ─── Bulk insert (3 round-trips, no upsert = no constraint dependency) ────────
 
-async function bulkInsert(supabase: ReturnType<typeof createClient>, items: EbayItem[]) {
+async function bulkInsert(supabase: any, items: EbayItem[]) {
   const now = new Date().toISOString();
 
   // ── Pass 1: insert products ───────────────────────────────────────────────
@@ -217,7 +217,7 @@ async function bulkInsert(supabase: ReturnType<typeof createClient>, items: Ebay
 
   // Check which skus already exist (Squarespace products with same sku)
   const { data: existingProds } = await supabase.from("products").select("id, sku").in("sku", allSkus);
-  const existingSkuMap = new Map<string, string>((existingProds ?? []).map((p: { id: string; sku: string }) => [p.sku, p.id]));
+  const existingSkuMap = new Map<string, string>((existingProds ?? []).map((p: any) => [p.sku, p.id]));
 
   // Only insert products that DON'T exist yet
   const newProdRows = items
@@ -227,7 +227,7 @@ async function bulkInsert(supabase: ReturnType<typeof createClient>, items: Ebay
 
   if (uniqueNewProds.length > 0) {
     const { data: inserted } = await supabase.from("products").insert(uniqueNewProds).select("id, sku");
-    for (const p of (inserted ?? [])) existingSkuMap.set(p.sku, p.id);
+    for (const p of (inserted ?? []) as any[]) existingSkuMap.set(p.sku, p.id);
   }
 
   const productBySku = existingSkuMap;
@@ -267,7 +267,7 @@ async function bulkInsert(supabase: ReturnType<typeof createClient>, items: Ebay
       const chunk = allISkus.slice(i, i + LOOKUP_CHUNK);
       const { data: existing } = await supabase
         .from("variants").select("id, internal_sku").in("internal_sku", chunk);
-      for (const v of (existing ?? [])) variantByISku.set(v.internal_sku, v.id);
+      for (const v of (existing ?? []) as any[]) variantByISku.set(v.internal_sku, v.id);
     }
   }
   // Insert only genuinely new variants
@@ -278,7 +278,7 @@ async function bulkInsert(supabase: ReturnType<typeof createClient>, items: Ebay
     if (insErr) {
       insertErrors.push(`${varRow.internal_sku}: ${insErr.message}`);
     } else if (inserted && inserted.length > 0) {
-      variantByISku.set(inserted[0].internal_sku, inserted[0].id);
+      variantByISku.set((inserted[0] as any).internal_sku, (inserted[0] as any).id);
     }
   }
 
@@ -334,7 +334,7 @@ async function bulkInsert(supabase: ReturnType<typeof createClient>, items: Ebay
   for (let i = 0; i < invRows.length; i += 150) {
     const chunk = invRows.slice(i, i + 150).map(r => r.variant_id);
     const { data: existing } = await supabase.from("inventory").select("variant_id").in("variant_id", chunk);
-    for (const inv of (existing ?? [])) existingInvSet.add(inv.variant_id);
+    for (const inv of (existing ?? []) as any[]) existingInvSet.add(inv.variant_id);
   }
   // Update existing
   for (const row of invRows) {

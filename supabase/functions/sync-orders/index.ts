@@ -28,11 +28,10 @@ Deno.serve(async (req) => {
       
       for (const order of ebayOrders) {
         const { data: alreadyProcessed } = await supabase
-          .from("processed_orders")
+          .from("sync_secrets")
           .select("id")
-          .eq("channel", "ebay")
-          .eq("order_id", order.orderId)
-          .single();
+          .eq("key", `processed_ebay_${order.orderId}`)
+          .maybeSingle();
 
         if (alreadyProcessed) continue;
 
@@ -45,7 +44,7 @@ Deno.serve(async (req) => {
           }
         }
 
-        await supabase.from("processed_orders").insert({ channel: "ebay", order_id: order.orderId }).catch(() => {});
+        await supabase.from("sync_secrets").upsert({ key: `processed_ebay_${order.orderId}`, value: "1" }, { onConflict: "key" });
         stats.ebay_orders++;
       }
 
@@ -66,11 +65,10 @@ Deno.serve(async (req) => {
 
       for (const order of sqOrders) {
         const { data: alreadyProcessed } = await supabase
-          .from("processed_orders")
+          .from("sync_secrets")
           .select("id")
-          .eq("channel", "squarespace")
-          .eq("order_id", order.id)
-          .single();
+          .eq("key", `processed_sq_${order.id}`)
+          .maybeSingle();
 
         if (alreadyProcessed) continue;
 
@@ -83,7 +81,7 @@ Deno.serve(async (req) => {
           }
         }
 
-        await supabase.from("processed_orders").insert({ channel: "squarespace", order_id: order.id }).catch(() => {});
+        await supabase.from("sync_secrets").upsert({ key: `processed_sq_${order.id}`, value: "1" }, { onConflict: "key" });
         stats.sq_orders++;
       }
 
@@ -98,7 +96,7 @@ Deno.serve(async (req) => {
       status: stats.errors.length === 0 ? "completed" : "partial",
       details: JSON.stringify(stats),
       source: "edge_function",
-    }).catch(() => {});
+    });
 
     return new Response(JSON.stringify({ success: true, ...stats }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },

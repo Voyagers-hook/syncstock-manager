@@ -29,24 +29,51 @@ export function useUnmergedProducts() {
   return useQuery({
     queryKey: ["unmerged-products"],
     queryFn: async () => {
+      // Fetch products with variants, then fetch listings per variant
       const { data: products } = await supabase
         .from("products")
-        .select("*, variants(*), channel_listings(*)")
+        .select("*, variants(*)")
         .eq("active", true);
       if (!products) return [];
+
+      const allVariantIds = products.flatMap((p: any) => (p.variants ?? []).map((v: any) => v.id));
+      if (allVariantIds.length === 0) return [];
+
+      // Fetch all channel_listings for these variants
+      const { data: allListings } = await supabase
+        .from("channel_listings")
+        .select("*")
+        .in("variant_id", allVariantIds);
+
+      const listingsByProduct = new Map<string, any[]>();
+      for (const l of (allListings ?? [])) {
+        // Find which product this variant belongs to
+        for (const p of products) {
+          if ((p as any).variants?.some((v: any) => v.id === l.variant_id)) {
+            const bucket = listingsByProduct.get(p.id) ?? [];
+            bucket.push(l);
+            listingsByProduct.set(p.id, bucket);
+            break;
+          }
+        }
+      }
+
       return products
-        .filter(
-          (p) =>
-            new Set(p.channel_listings.map((l: any) => l.channel)).size === 1
-        )
-        .map((p: any) => ({
-          id: p.id,
-          name: p.name,
-          sku: p.sku,
-          channel: p.channel_listings[0]?.channel,
-          variant_id: p.variants[0]?.id,
-          listing_id: p.channel_listings[0]?.id,
-        }));
+        .filter((p: any) => {
+          const listings = listingsByProduct.get(p.id) ?? [];
+          return listings.length > 0 && new Set(listings.map((l: any) => l.channel)).size === 1;
+        })
+        .map((p: any) => {
+          const listings = listingsByProduct.get(p.id) ?? [];
+          return {
+            id: p.id,
+            name: p.name,
+            sku: p.sku,
+            channel: listings[0]?.channel,
+            variant_id: p.variants[0]?.id,
+            listing_id: listings[0]?.id,
+          };
+        });
     },
   });
 }

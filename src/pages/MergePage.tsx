@@ -215,8 +215,8 @@ function ProductColumn({
             <p className="text-sm font-medium text-foreground truncate">{item.name}</p>
             <div className="flex items-center gap-3 mt-1">
               <span className="text-xs text-muted-foreground font-mono">{item.sku ?? "—"}</span>
-              {item.channel_price != null && (
-                <span className="text-xs text-foreground">£{item.channel_price.toFixed(2)}</span>
+              {'channel_price' in item && (item as any).channel_price != null && (
+                <span className="text-xs text-foreground">£{(item as any).channel_price.toFixed(2)}</span>
               )}
             </div>
           </button>
