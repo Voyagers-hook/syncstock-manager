@@ -1,8 +1,8 @@
 import React from "react";
 import { supabase } from "@/integrations/supabase/client";
-import { useUndoMerge } from "@/hooks/use-merge"; // change if your path is different
+import { useUndoMerge } from "../hooks/use-merge"; // <<--- Change this path if you get an error
 
-export default function UndoMergesPage() {
+export default function UndoMergePage() {
   const [merges, setMerges] = React.useState([]);
   const { mutate: undoMerge, isLoading } = useUndoMerge();
 
@@ -18,16 +18,20 @@ export default function UndoMergesPage() {
   if (!merges.length) return <div>No merges to undo.</div>;
 
   return (
-    <div>
-      <h3>Undo Recent Merges</h3>
-      <ul>
+    <div style={{ margin: "40px" }}>
+      <h2>Undo Recent Merges</h2>
+      <ul style={{ listStyle: "none", padding: 0 }}>
         {merges.map((mh) => (
-          <li key={mh.id} style={{ marginBottom: 10 }}>
-            <strong>Merged product {mh.remove_product_id} into {mh.keep_product_id}</strong>
+          <li key={mh.id} style={{ marginBottom: "16px", padding: "12px", border: "1px solid #aaa" }}>
+            <div>
+              <strong>Merged product</strong> <code>{mh.remove_product_id}</code> <strong>into</strong> <code>{mh.keep_product_id}</code>
+              <br />
+              <small>Merged at: {mh.merged_at}</small>
+            </div>
             <button
               onClick={() => undoMerge({ historyId: mh.id })}
               disabled={isLoading}
-              style={{ marginLeft: 10 }}
+              style={{ marginTop: "8px" }}
             >
               Undo Merge
             </button>
