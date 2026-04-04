@@ -24,6 +24,7 @@ const ProductTable = () => {
   const updateChannelPrice = useUpdateChannelPrice();
   const updateInventory = useUpdateInventory();
   const deleteProduct = useDeleteProduct();
+  const createInventory = useCreateInventory();
 
   const handleDelete = (p: ProductWithDetails) => {
     if (!confirm(`Delete "${p.name}"? This cannot be undone.`)) return;
