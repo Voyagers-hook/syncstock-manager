@@ -76,11 +76,15 @@ function ProductMergeTab() {
   const [selectedEbay, setSelectedEbay] = useState<UnmergedProduct | null>(null);
   const [selectedSqsp, setSelectedSqsp] = useState<UnmergedProduct | null>(null);
 
-  const filtered = unmerged.filter(
-    (p) =>
-      p.name.toLowerCase().includes(search.toLowerCase()) ||
-      (p.sku?.toLowerCase().includes(search.toLowerCase()) ?? false)
-  );
+  // FIX: only filter when the user has actually typed something.
+  // Previously, search="" matched everything because "".includes("") is always true.
+  const filtered = search.trim()
+    ? unmerged.filter(
+        (p) =>
+          p.name.toLowerCase().includes(search.toLowerCase()) ||
+          (p.sku?.toLowerCase().includes(search.toLowerCase()) ?? false)
+      )
+    : [];
 
   const ebayItems = filtered.filter((p) => p.channel === "ebay");
   const sqspItems = filtered.filter((p) => p.channel === "squarespace");
@@ -133,7 +137,7 @@ function ProductMergeTab() {
       </div>
 
       <p className="text-xs text-muted-foreground mb-4">
-        Select a product from each column then click <strong>Merge Selected</strong>. Variants are auto-matched by name — use the <strong>By Variant</strong> tab if you need to match them manually.
+        Search for a product to find it in each column, then click <strong>Merge Selected</strong>. Variants are auto-matched by name — use the <strong>By Variant</strong> tab if you need to match them manually.
       </p>
 
       {/* Selection preview */}
@@ -174,22 +178,34 @@ function ProductMergeTab() {
       {error && <p className="text-destructive text-center p-8">Failed to load products.</p>}
 
       {!isLoading && !error && (
-        <div className="grid grid-cols-2 gap-6">
-          <ProductColumn
-            label="eBay"
-            badgeClass="bg-blue-600 text-white"
-            items={ebayItems}
-            selected={selectedEbay}
-            onSelect={(item) => setSelectedEbay(selectedEbay?.id === item.id ? null : item)}
-          />
-          <ProductColumn
-            label="Squarespace"
-            badgeClass="bg-foreground text-background"
-            items={sqspItems}
-            selected={selectedSqsp}
-            onSelect={(item) => setSelectedSqsp(selectedSqsp?.id === item.id ? null : item)}
-          />
-        </div>
+        <>
+          {/* Empty state — prompt to search */}
+          {!search.trim() && (
+            <div className="flex flex-col items-center justify-center p-16 text-center text-muted-foreground">
+              <Search className="w-8 h-8 mb-3 opacity-40" />
+              <p className="text-sm">Type a product name or SKU above to find items to merge</p>
+            </div>
+          )}
+
+          {search.trim() && (
+            <div className="grid grid-cols-2 gap-6">
+              <ProductColumn
+                label="eBay"
+                badgeClass="bg-blue-600 text-white"
+                items={ebayItems}
+                selected={selectedEbay}
+                onSelect={(item) => setSelectedEbay(selectedEbay?.id === item.id ? null : item)}
+              />
+              <ProductColumn
+                label="Squarespace"
+                badgeClass="bg-foreground text-background"
+                items={sqspItems}
+                selected={selectedSqsp}
+                onSelect={(item) => setSelectedSqsp(selectedSqsp?.id === item.id ? null : item)}
+              />
+            </div>
+          )}
+        </>
       )}
     </>
   );
@@ -212,7 +228,7 @@ function ProductColumn({
     <div>
       <div className="flex items-center gap-2 mb-3">
         <Badge className={badgeClass}>{label}</Badge>
-        <span className="text-sm text-muted-foreground">{items.length} unlinked</span>
+        <span className="text-sm text-muted-foreground">{items.length} result{items.length !== 1 ? "s" : ""}</span>
       </div>
       <div className="space-y-2 max-h-[calc(100vh-400px)] overflow-y-auto pr-2">
         {items.map((item) => (
@@ -235,7 +251,7 @@ function ProductColumn({
           </button>
         ))}
         {items.length === 0 && (
-          <p className="text-sm text-muted-foreground p-4 text-center">All {label} items are merged</p>
+          <p className="text-sm text-muted-foreground p-4 text-center">No {label} results</p>
         )}
       </div>
     </div>
@@ -251,12 +267,16 @@ function VariantMergeTab() {
   const [selectedEbay, setSelectedEbay] = useState<UnmergedVariant | null>(null);
   const [selectedSqsp, setSelectedSqsp] = useState<UnmergedVariant | null>(null);
 
-  const filtered = variants.filter(
-    (v) =>
-      v.product_name.toLowerCase().includes(search.toLowerCase()) ||
-      v.variant_name.toLowerCase().includes(search.toLowerCase()) ||
-      (v.channel_sku?.toLowerCase().includes(search.toLowerCase()) ?? false)
-  );
+  // FIX: only filter when the user has actually typed something.
+  // Previously, search="" matched everything because "".includes("") is always true.
+  const filtered = search.trim()
+    ? variants.filter(
+        (v) =>
+          v.product_name.toLowerCase().includes(search.toLowerCase()) ||
+          v.variant_name.toLowerCase().includes(search.toLowerCase()) ||
+          (v.channel_sku?.toLowerCase().includes(search.toLowerCase()) ?? false)
+      )
+    : [];
 
   const ebayVariants = filtered.filter((v) => v.channel === "ebay");
   const sqspVariants = filtered.filter((v) => v.channel === "squarespace");
@@ -299,7 +319,7 @@ function VariantMergeTab() {
       </div>
 
       <p className="text-xs text-muted-foreground mb-4">
-        Pick a specific eBay variant and its matching Squarespace variant, then click <strong>Link Variants</strong>. After linking they share the same inventory — a sale on either platform adjusts both.
+        Search for a product, pick a specific eBay variant and its matching Squarespace variant, then click <strong>Link Variants</strong>. After linking they share the same inventory — a sale on either platform adjusts both.
       </p>
 
       {/* Selection preview */}
@@ -340,22 +360,34 @@ function VariantMergeTab() {
       {error && <p className="text-destructive text-center p-8">Failed to load variants.</p>}
 
       {!isLoading && !error && (
-        <div className="grid grid-cols-2 gap-6">
-          <VariantColumn
-            label="eBay"
-            badgeClass="bg-blue-600 text-white"
-            items={ebayVariants}
-            selected={selectedEbay}
-            onSelect={(v) => setSelectedEbay(selectedEbay?.variant_id === v.variant_id ? null : v)}
-          />
-          <VariantColumn
-            label="Squarespace"
-            badgeClass="bg-foreground text-background"
-            items={sqspVariants}
-            selected={selectedSqsp}
-            onSelect={(v) => setSelectedSqsp(selectedSqsp?.variant_id === v.variant_id ? null : v)}
-          />
-        </div>
+        <>
+          {/* Empty state — prompt to search */}
+          {!search.trim() && (
+            <div className="flex flex-col items-center justify-center p-16 text-center text-muted-foreground">
+              <Search className="w-8 h-8 mb-3 opacity-40" />
+              <p className="text-sm">Type a product or variant name above to find variants to link</p>
+            </div>
+          )}
+
+          {search.trim() && (
+            <div className="grid grid-cols-2 gap-6">
+              <VariantColumn
+                label="eBay"
+                badgeClass="bg-blue-600 text-white"
+                items={ebayVariants}
+                selected={selectedEbay}
+                onSelect={(v) => setSelectedEbay(selectedEbay?.variant_id === v.variant_id ? null : v)}
+              />
+              <VariantColumn
+                label="Squarespace"
+                badgeClass="bg-foreground text-background"
+                items={sqspVariants}
+                selected={selectedSqsp}
+                onSelect={(v) => setSelectedSqsp(selectedSqsp?.variant_id === v.variant_id ? null : v)}
+              />
+            </div>
+          )}
+        </>
       )}
     </>
   );
@@ -378,7 +410,7 @@ function VariantColumn({
     <div>
       <div className="flex items-center gap-2 mb-3">
         <Badge className={badgeClass}>{label}</Badge>
-        <span className="text-sm text-muted-foreground">{items.length} unlinked variants</span>
+        <span className="text-sm text-muted-foreground">{items.length} result{items.length !== 1 ? "s" : ""}</span>
       </div>
       <div className="space-y-2 max-h-[calc(100vh-420px)] overflow-y-auto pr-2">
         {items.map((v) => (
@@ -404,7 +436,7 @@ function VariantColumn({
           </button>
         ))}
         {items.length === 0 && (
-          <p className="text-sm text-muted-foreground p-4 text-center">All {label} variants are linked</p>
+          <p className="text-sm text-muted-foreground p-4 text-center">No {label} results</p>
         )}
       </div>
     </div>
