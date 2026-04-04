@@ -267,7 +267,7 @@ async function upsertProducts(supabase: any, squarespaceProducts: SqProduct[]) {
     const imageUrl = sqProduct.images?.[0]?.url || null;
     const canonicalListing = sqProduct.variants
       .map((variant) => listingByExternalVariantId.get(variant.id))
-      .find((listing): listing is { id: string; variant_id: string; product_id: string | null } => Boolean(listing));
+      .find((listing): listing is { id: string; variant_id: string; product_id: string | null | undefined } => Boolean(listing));
 
     let productId = canonicalListing?.product_id ?? productIdByName.get(sqProduct.name);
 
