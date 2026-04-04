@@ -29,7 +29,6 @@ export function useUnmergedProducts() {
   return useQuery({
     queryKey: ["unmerged-products"],
     queryFn: async () => {
-      // Fetch products with variants, then fetch listings per variant
       const { data: products } = await supabase
         .from("products")
         .select("*, variants(*)")
@@ -39,7 +38,6 @@ export function useUnmergedProducts() {
       const allVariantIds = products.flatMap((p: any) => (p.variants ?? []).map((v: any) => v.id));
       if (allVariantIds.length === 0) return [];
 
-      // Fetch channel_listings in chunks to avoid URL / query-size limits
       const CHUNK = 150;
       const allListings: any[] = [];
       for (let i = 0; i < allVariantIds.length; i += CHUNK) {
@@ -54,7 +52,6 @@ export function useUnmergedProducts() {
 
       const listingsByProduct = new Map<string, any[]>();
       for (const l of allListings) {
-        // Find which product this variant belongs to
         for (const p of products) {
           if ((p as any).variants?.some((v: any) => v.id === l.variant_id)) {
             const bucket = listingsByProduct.get(p.id) ?? [];
@@ -85,7 +82,7 @@ export function useUnmergedProducts() {
   });
 }
 
-// ─── FIXED MANUAL MERGE LOGIC WITH HISTORY TRACKING ────────────────────────────
+// ─── FIXED MANUAL MERGE & UNMERGE LOGIC ────────────────────────────────────────────
 export function useMergeProducts() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -96,46 +93,36 @@ export function useMergeProducts() {
       keepId: string;
       removeId: string;
     }) => {
-      // Get all variants for the product being removed
       const { data: removeVariants } = await supabase
         .from("variants")
         .select("*")
         .eq("product_id", removeId);
 
       if (!removeVariants) throw new Error("Missing removed variants");
-
-      // Record the IDs of all new variants created:
       let newVariantIds: string[] = [];
-
       for (const rv of removeVariants) {
-        // Create a new variant under the kept product with the SAME options as the removed one
         const { data: [newVariant], error: createErr } = await supabase
           .from("variants")
           .insert({
             product_id: keepId,
             option1: rv.option1,
             option2: rv.option2,
-            // Copy other fields as needed (e.g. sku, barcode)
           })
           .select();
 
         if (createErr || !newVariant) throw new Error("Failed to create new variant on kept product");
         newVariantIds.push(newVariant.id);
 
-        // Move channel listings to the new variant
         await supabase
           .from("channel_listings")
           .update({ variant_id: newVariant.id })
           .eq("variant_id", rv.id);
 
-        // Move inventory to the new variant (and delete old)
         await consolidateInventory(newVariant.id, rv.id);
 
-        // Delete the removed variant
         await supabase.from("variants").delete().eq("id", rv.id);
       }
 
-      // Log the merge operation in merge_history for undo capability
       await supabase
         .from("merge_history")
         .insert({
@@ -146,11 +133,9 @@ export function useMergeProducts() {
           new_variant_ids: newVariantIds,
           action: "merge",
           undoable: true,
-          merged_by: null // Or user id if using auth
+          merged_by: null
         });
 
-      // Clean up any orphan variants that remain on the removed product
-      // (e.g. if a previous partial merge left some behind).
       const { data: orphans } = await supabase
         .from("variants")
         .select("id")
@@ -178,13 +163,76 @@ export function useMergeProducts() {
   });
 }
 
+export function useUndoMerge() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ historyId }: { historyId: string }) => {
+      const { data: history, error } = await supabase
+        .from("merge_history")
+        .select("*")
+        .eq("id", historyId)
+        .maybeSingle();
+
+      if (error || !history) throw new Error("Merge history not found!");
+    
+      for (let i = 0; i < history.original_variant_ids.length; ++i) {
+        const oldVariantId = history.original_variant_ids[i];
+        const oldProductId = history.original_variant_products[i];
+        const newVariantId = history.new_variant_ids[i];
+
+        const { data: variantExists } = await supabase
+          .from("variants")
+          .select("id")
+          .eq("id", oldVariantId)
+          .maybeSingle();
+
+        if (!variantExists) {
+          await supabase.from("variants").insert({
+            id: oldVariantId,
+            product_id: oldProductId,
+          });
+        }
+
+        await supabase
+          .from("channel_listings")
+          .update({ variant_id: oldVariantId })
+          .eq("variant_id", newVariantId);
+
+        await consolidateInventory(oldVariantId, newVariantId);
+
+        await supabase.from("variants").delete().eq("id", newVariantId);
+      }
+
+      await supabase
+        .from("products")
+        .update({ active: true })
+        .eq("id", history.remove_product_id);
+
+      await supabase
+        .from("merge_history")
+        .update({ undoable: false })
+        .eq("id", historyId);
+
+      return { undone: true };
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["products"] });
+      queryClient.invalidateQueries({ queryKey: ["unmerged-products"] });
+      queryClient.invalidateQueries({ queryKey: ["unmerged-variants"] });
+      toast.success("Unmerge/Undo successful!");
+    },
+    onError: (err: any) => {
+      toast.error(`Undo failed: ${err.message}`);
+    },
+  });
+}
+
 // ─── Variant-level hooks ──────────────────────────────────────────────────────
 
 export function useUnmergedVariants() {
   return useQuery({
     queryKey: ["unmerged-variants"],
     queryFn: async () => {
-      // Get all channel listings with variant + product info
       const { data: listings, error } = await supabase
         .from("channel_listings")
         .select(
@@ -194,12 +242,10 @@ export function useUnmergedVariants() {
       if (error) throw error;
       if (!listings) return [];
 
-      // Filter out inactive products
       const active = listings.filter(
         (l: any) => l.variants?.products?.active !== false
       );
 
-      // Count how many channels each variant has
       const channelsByVariant = new Map<string, Set<string>>();
       for (const l of active) {
         const set = channelsByVariant.get(l.variant_id) ?? new Set();
@@ -207,7 +253,6 @@ export function useUnmergedVariants() {
         channelsByVariant.set(l.variant_id, set);
       }
 
-      // Only include variants with exactly 1 channel listing
       const unlinked = active.filter(
         (l: any) => (channelsByVariant.get(l.variant_id)?.size ?? 0) === 1
       );
@@ -240,26 +285,21 @@ export function useMergeVariants() {
       keepVariantId: string;
       removeVariantId: string;
     }) => {
-      // Remember the removed variant's parent product before we delete it
       const { data: removeVariantData } = await supabase
         .from("variants")
         .select("product_id")
         .eq("id", removeVariantId)
         .maybeSingle();
 
-      // Move all channel_listings from removeVariantId → keepVariantId
       await supabase
         .from("channel_listings")
         .update({ variant_id: keepVariantId })
         .eq("variant_id", removeVariantId);
 
-      // Consolidate inventory (also fixes product_id on kept inventory row)
       await consolidateInventory(keepVariantId, removeVariantId);
 
-      // Delete the absorbed variant
       await supabase.from("variants").delete().eq("id", removeVariantId);
 
-      // If the removed variant's parent product now has no variants, deactivate it
       if (removeVariantData?.product_id) {
         const { data: remaining } = await supabase
           .from("variants")
@@ -319,8 +359,6 @@ async function consolidateInventory(keepId: string, removeId: string) {
       .eq("id", removeInv.id);
   }
 
-  // Ensure the kept inventory row's product_id matches the kept variant's product
-  // so the dashboard's product-level stock totals are correct.
   const { data: keepVariant } = await supabase
     .from("variants")
     .select("product_id")
@@ -335,10 +373,6 @@ async function consolidateInventory(keepId: string, removeId: string) {
   }
 }
 
-// Placeholders
-export function useUndoMerge() {
-  return useMutation({ mutationFn: async () => {} });
-}
 export function useMergeHistory() {
   return { history: [], refresh: () => {} };
 }
