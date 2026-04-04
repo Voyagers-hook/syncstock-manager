@@ -188,15 +188,40 @@ async function pushSquarespaceUpdate(
     const productId = listing.channel_product_id;
     if (!productId) throw new Error("Missing Squarespace product ID for price update");
 
-    const resp = await fetch(
-      `${SQ_API_BASE}/commerce/products/${productId}`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-          "User-Agent": "SyncStock/1.0",
+    const sqHeaders = {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+      "User-Agent": "SyncStock/1.0",
+    };
+    const priceEndpoint = `${SQ_API_BASE}/commerce/products/${productId}`;
+    const ERROR_BODY_LIMIT = 300;
+
+    // First try product-level pricing (works for single products)
+    const resp = await fetch(priceEndpoint, {
+      method: "POST",
+      headers: sqHeaders,
+      body: JSON.stringify({
+        pricing: {
+          basePrice: {
+            value: price.toFixed(2),
+            currency: "GBP",
+          },
         },
+      }),
+    });
+
+    if (!resp.ok) {
+      // Only fall back to variant-level pricing on 400 (field not supported for single products).
+      // Other errors (401, 403, 5xx) indicate auth or server issues — surface them immediately.
+      if (resp.status !== 400) {
+        const body = await resp.text();
+        throw new Error(`Squarespace price update failed [${resp.status}]: ${body.slice(0, ERROR_BODY_LIMIT)}`);
+      }
+
+      // Fall back to variant-level pricing for multi-variant products
+      const fallbackResp = await fetch(priceEndpoint, {
+        method: "POST",
+        headers: sqHeaders,
         body: JSON.stringify({
           variants: [
             {
@@ -210,12 +235,12 @@ async function pushSquarespaceUpdate(
             },
           ],
         }),
-      }
-    );
+      });
 
-    if (!resp.ok) {
-      const body = await resp.text();
-      throw new Error(`Squarespace price update failed [${resp.status}]: ${body.slice(0, 200)}`);
+      if (!fallbackResp.ok) {
+        const body = await fallbackResp.text();
+        throw new Error(`Squarespace price update failed [${fallbackResp.status}]: ${body.slice(0, ERROR_BODY_LIMIT)}`);
+      }
     }
   }
 }
