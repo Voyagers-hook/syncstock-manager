@@ -278,7 +278,7 @@ async function bulkInsert(supabase: any, items: EbayItem[]) {
     if (insErr) {
       insertErrors.push(`${varRow.internal_sku}: ${insErr.message}`);
     } else if (inserted && inserted.length > 0) {
-      variantByISku.set(inserted[0].internal_sku, inserted[0].id);
+      variantByISku.set((inserted[0] as any).internal_sku, (inserted[0] as any).id);
     }
   }
 
