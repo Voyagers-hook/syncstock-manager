@@ -85,7 +85,7 @@ export function useUnmergedProducts() {
   });
 }
 
-// ─── FIXED MANUAL MERGE LOGIC ────────────────────────────────────────────
+// ─── FIXED MANUAL MERGE LOGIC WITH HISTORY TRACKING ────────────────────────────
 export function useMergeProducts() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -104,6 +104,9 @@ export function useMergeProducts() {
 
       if (!removeVariants) throw new Error("Missing removed variants");
 
+      // Record the IDs of all new variants created:
+      let newVariantIds: string[] = [];
+
       for (const rv of removeVariants) {
         // Create a new variant under the kept product with the SAME options as the removed one
         const { data: [newVariant], error: createErr } = await supabase
@@ -117,6 +120,7 @@ export function useMergeProducts() {
           .select();
 
         if (createErr || !newVariant) throw new Error("Failed to create new variant on kept product");
+        newVariantIds.push(newVariant.id);
 
         // Move channel listings to the new variant
         await supabase
@@ -130,6 +134,20 @@ export function useMergeProducts() {
         // Delete the removed variant
         await supabase.from("variants").delete().eq("id", rv.id);
       }
+
+      // Log the merge operation in merge_history for undo capability
+      await supabase
+        .from("merge_history")
+        .insert({
+          keep_product_id: keepId,
+          remove_product_id: removeId,
+          original_variant_ids: removeVariants.map((v: any) => v.id),
+          original_variant_products: removeVariants.map((v: any) => v.product_id),
+          new_variant_ids: newVariantIds,
+          action: "merge",
+          undoable: true,
+          merged_by: null // Or user id if using auth
+        });
 
       // Clean up any orphan variants that remain on the removed product
       // (e.g. if a previous partial merge left some behind).
