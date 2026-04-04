@@ -4,7 +4,7 @@ description: Edge function based sync - eBay/Squarespace import via Lovable Clou
 type: feature
 ---
 ## Architecture v2 (Apr 2026)
-- Dashboard reads/writes Lovable Cloud Supabase (ymztzqmhtxygzebrofrp)
+- Dashboard reads/writes Lovable Cloud Supabase (czoppjnkjxmduldxlbqh)
 - Sync runs as **edge functions** called directly from dashboard buttons
 - No external Python scripts or GitHub Actions needed
 
