@@ -218,7 +218,18 @@ export function useUpdateChannelPrice() {
       price: number;
       channel: string;
     }) => {
-      // 1. Save price to DB
+      // 1. Read the current price so we can roll back on push failure
+      const { data: currentRow, error: readError } = await supabase
+        .from("channel_listings")
+        .select("channel_price")
+        .eq("id", listingId)
+        .single();
+      if (readError) {
+        console.warn("Could not read previous price for rollback:", readError.message);
+      }
+      const previousPrice = currentRow?.channel_price ?? null;
+
+      // 2. Save price to DB
       const { error } = await supabase
         .from("channel_listings")
         .update({ channel_price: price, updated_at: new Date().toISOString() })
@@ -230,22 +241,37 @@ export function useUpdateChannelPrice() {
         .update({ needs_sync: false, updated_at: new Date().toISOString() })
         .eq("id", variantId);
 
-      // 2. Push price only to the specific channel being edited
+      // 3. Push price only to the specific channel being edited
       const { data, error: pushError } = await supabase.functions.invoke("push-stock", {
         body: { variantId, price, channel },
       });
 
-      if (pushError) {
-        console.warn("push-stock price error:", pushError.message);
-        throw new Error(`Price saved but failed to push to platforms: ${pushError.message}`);
-      }
+      const pushFailed =
+        pushError ||
+        (data?.results ?? []).some((r: any) => r.status === "error");
 
-      const failedChannels = (data?.results ?? [])
-        .filter((r: any) => r.status === "error")
-        .map((r: any) => `${r.channel}: ${r.message ?? "unknown error"}`);
+      if (pushFailed) {
+        // Roll back DB price to the previous value so the dashboard stays in sync.
+        // Only attempt rollback if we successfully read the previous price.
+        if (!readError) {
+          const { error: rollbackError } = await supabase
+            .from("channel_listings")
+            .update({ channel_price: previousPrice, updated_at: new Date().toISOString() })
+            .eq("id", listingId);
+          if (rollbackError) {
+            console.warn("Price rollback failed:", rollbackError.message);
+          }
+        }
 
-      if (failedChannels.length > 0) {
-        throw new Error(`Price saved but push failed — ${failedChannels.join("; ")}`);
+        if (pushError) {
+          console.warn("push-stock price error:", pushError.message);
+          throw new Error(`Failed to push price to ${channel}: ${pushError.message}`);
+        }
+
+        const failedChannels = (data?.results ?? [])
+          .filter((r: any) => r.status === "error")
+          .map((r: any) => `${r.channel}: ${r.message ?? "unknown error"}`);
+        throw new Error(`Push failed — ${failedChannels.join("; ")}`);
       }
     },
     onSuccess: () => {

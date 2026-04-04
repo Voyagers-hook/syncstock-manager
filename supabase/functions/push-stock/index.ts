@@ -189,7 +189,7 @@ async function pushSquarespaceUpdate(
     if (!productId) throw new Error("Missing Squarespace product ID for price update");
 
     const resp = await fetch(
-      `${SQ_API_V2_BASE}/commerce/products/${productId}/variants/${variantId}`,
+      `${SQ_API_BASE}/commerce/products/${productId}/variants/${variantId}`,
       {
         method: "PUT",
         headers: {
@@ -198,7 +198,7 @@ async function pushSquarespaceUpdate(
           "User-Agent": "SyncStock/1.0",
         },
         body: JSON.stringify({
-          pricing: { basePrice: { value: price.toFixed(2), currency: "GBP" } },
+          priceMoney: { value: Math.round(price * 100), currencyCode: "GBP" },
         }),
       }
     );
