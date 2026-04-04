@@ -258,7 +258,7 @@ async function fetchSquarespaceOrders(apiKey: string, since: Date): Promise<SqOr
   while (true) {
     const params = cursor
       ? `cursor=${cursor}`
-      : `modifiedAfter=${since.toISOString()}&modifiedBefore=${until.toISOString()}`;
+      : `modifiedAfter=${encodeURIComponent(since.toISOString())}&modifiedBefore=${encodeURIComponent(until.toISOString())}`;
 
     const resp = await fetch(`${SQ_API_BASE}/commerce/orders?${params}`, {
       headers: { Authorization: `Bearer ${apiKey}`, "User-Agent": "SyncStock/1.0" },
