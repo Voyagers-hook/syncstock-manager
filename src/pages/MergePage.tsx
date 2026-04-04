@@ -3,7 +3,6 @@ import DashboardSidebar from "@/components/DashboardSidebar";
 import {
   useUnmergedProducts,
   useMergeProducts,
-  useUndoMerge,
   useUnmergedVariants,
   useMergeVariants,
   type UnmergedProduct,
@@ -12,6 +11,12 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { Loader2, Link2, Undo2, Search, ArrowRight } from "lucide-react";
 import { toast } from "sonner";
 
@@ -67,7 +72,6 @@ const MergePage = () => {
 function ProductMergeTab() {
   const { data: unmerged = [], isLoading, error } = useUnmergedProducts();
   const merge = useMergeProducts();
-  const undo = useUndoMerge();
   const [search, setSearch] = useState("");
   const [selectedEbay, setSelectedEbay] = useState<UnmergedProduct | null>(null);
   const [selectedSqsp, setSelectedSqsp] = useState<UnmergedProduct | null>(null);
@@ -104,10 +108,19 @@ function ProductMergeTab() {
           />
         </div>
         <div className="flex items-center gap-3 ml-4">
-          <Button variant="outline" size="sm" onClick={() => undo.mutateAsync()} disabled={undo.isPending}>
-            <Undo2 className="w-4 h-4 mr-2" />
-            Undo Last Merge
-          </Button>
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span>
+                  <Button variant="outline" size="sm" disabled>
+                    <Undo2 className="w-4 h-4 mr-2" />
+                    Undo Last Merge
+                  </Button>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>Coming soon — undo merge is not yet available</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
           <Button
             size="sm"
             onClick={handleMerge}

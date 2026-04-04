@@ -78,6 +78,16 @@ export function useUnmergedProducts() {
   });
 }
 
+// Normalise a variant option string for fuzzy matching.
+// Lowercases, trims, and extracts the last segment after " - " so that
+// e.g. "Carp - Green" matches "Green".
+function normalizeOption(opt: string | null | undefined): string {
+  if (!opt) return "";
+  const lower = opt.trim().toLowerCase();
+  const parts = lower.split(" - ");
+  return parts[parts.length - 1].trim();
+}
+
 // ─── FIXED MERGE LOGIC v2 ────────────────────────────────────────────
 export function useMergeProducts() {
   const queryClient = useQueryClient();
@@ -101,10 +111,11 @@ export function useMergeProducts() {
       if (!removeVariants || !keepVariants) throw new Error("Missing data");
 
       for (const rv of removeVariants) {
+        // Fuzzy match: normalise option strings before comparing
         const match = keepVariants.find(
           (kv) =>
-            (kv.option1 ?? null) === (rv.option1 ?? null) &&
-            (kv.option2 ?? null) === (rv.option2 ?? null)
+            normalizeOption(kv.option1) === normalizeOption(rv.option1) &&
+            normalizeOption(kv.option2) === normalizeOption(rv.option2)
         );
 
         if (match) {
@@ -117,11 +128,31 @@ export function useMergeProducts() {
 
           await supabase.from("variants").delete().eq("id", rv.id);
         } else {
-          await supabase
-            .from("variants")
-            .update({ product_id: keepId })
-            .eq("id", rv.id);
+          // No matching variant — move listings to first keep variant to avoid
+          // creating a duplicate variant under the kept product.
+          const firstKeep = keepVariants[0];
+          if (firstKeep) {
+            await supabase
+              .from("channel_listings")
+              .update({ variant_id: firstKeep.id })
+              .eq("variant_id", rv.id);
+            await consolidateInventory(firstKeep.id, rv.id);
+          }
+          await supabase.from("variants").delete().eq("id", rv.id);
         }
+      }
+
+      // Clean up any orphan variants that remain on the removed product
+      // (e.g. if a previous partial merge left some behind).
+      const { data: orphans } = await supabase
+        .from("variants")
+        .select("id")
+        .eq("product_id", removeId);
+      if (orphans?.length) {
+        const orphanIds = orphans.map((v: any) => v.id);
+        await supabase.from("channel_listings").delete().in("variant_id", orphanIds);
+        await supabase.from("inventory").delete().in("variant_id", orphanIds);
+        await supabase.from("variants").delete().eq("product_id", removeId);
       }
 
       await supabase
@@ -201,17 +232,38 @@ export function useMergeVariants() {
       keepVariantId: string;
       removeVariantId: string;
     }) => {
+      // Remember the removed variant's parent product before we delete it
+      const { data: removeVariantData } = await supabase
+        .from("variants")
+        .select("product_id")
+        .eq("id", removeVariantId)
+        .maybeSingle();
+
       // Move all channel_listings from removeVariantId → keepVariantId
       await supabase
         .from("channel_listings")
         .update({ variant_id: keepVariantId })
         .eq("variant_id", removeVariantId);
 
-      // Consolidate inventory
+      // Consolidate inventory (also fixes product_id on kept inventory row)
       await consolidateInventory(keepVariantId, removeVariantId);
 
       // Delete the absorbed variant
       await supabase.from("variants").delete().eq("id", removeVariantId);
+
+      // If the removed variant's parent product now has no variants, deactivate it
+      if (removeVariantData?.product_id) {
+        const { data: remaining } = await supabase
+          .from("variants")
+          .select("id")
+          .eq("product_id", removeVariantData.product_id);
+        if (!remaining?.length) {
+          await supabase
+            .from("products")
+            .update({ active: false })
+            .eq("id", removeVariantData.product_id);
+        }
+      }
 
       return { keepVariantId };
     },
@@ -257,6 +309,21 @@ async function consolidateInventory(keepId: string, removeId: string) {
       .from("inventory")
       .update({ variant_id: keepId })
       .eq("id", removeInv.id);
+  }
+
+  // Ensure the kept inventory row's product_id matches the kept variant's product
+  // so the dashboard's product-level stock totals are correct.
+  const { data: keepVariant } = await supabase
+    .from("variants")
+    .select("product_id")
+    .eq("id", keepId)
+    .maybeSingle();
+
+  if (keepVariant?.product_id) {
+    await supabase
+      .from("inventory")
+      .update({ product_id: keepVariant.product_id })
+      .eq("variant_id", keepId);
   }
 }
 
