@@ -217,7 +217,7 @@ async function bulkInsert(supabase: any, items: EbayItem[]) {
 
   // Check which skus already exist (Squarespace products with same sku)
   const { data: existingProds } = await supabase.from("products").select("id, sku").in("sku", allSkus);
-  const existingSkuMap = new Map<string, string>((existingProds ?? []).map((p: { id: string; sku: string }) => [p.sku, p.id]));
+  const existingSkuMap = new Map<string, string>((existingProds ?? []).map((p: any) => [p.sku, p.id]));
 
   // Only insert products that DON'T exist yet
   const newProdRows = items
