@@ -1,0 +1,39 @@
+import React from "react";
+import { supabase } from "@/integrations/supabase/client";
+import { useUndoMerge } from "@/hooks/use-merge"; // change if your path is different
+
+export default function UndoMergesPage() {
+  const [merges, setMerges] = React.useState([]);
+  const { mutate: undoMerge, isLoading } = useUndoMerge();
+
+  React.useEffect(() => {
+    supabase
+      .from("merge_history")
+      .select("*")
+      .eq("undoable", true)
+      .order("merged_at", { ascending: false })
+      .then(({ data }) => setMerges(data || []));
+  }, []);
+
+  if (!merges.length) return <div>No merges to undo.</div>;
+
+  return (
+    <div>
+      <h3>Undo Recent Merges</h3>
+      <ul>
+        {merges.map((mh) => (
+          <li key={mh.id} style={{ marginBottom: 10 }}>
+            <strong>Merged product {mh.remove_product_id} into {mh.keep_product_id}</strong>
+            <button
+              onClick={() => undoMerge({ historyId: mh.id })}
+              disabled={isLoading}
+              style={{ marginLeft: 10 }}
+            >
+              Undo Merge
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
