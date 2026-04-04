@@ -124,22 +124,43 @@ export function useProducts() {
         })
         .filter((product) => product.name.trim().length > 0);
 
-      const scoreProduct = (product: ProductWithDetails) => {
-        const listingScore = product.channel_listings.length * 100;
-        const priceScore = (product.ebay_price != null ? 10 : 0) + (product.squarespace_price != null ? 10 : 0);
-        const variantScore = product.variants.length * 5;
-        const stockScore = product.total_stock > 0 ? 1 : 0;
-        return listingScore + priceScore + variantScore + stockScore;
-      };
-
       const dedupedProducts = new Map<string, ProductWithDetails>();
 
       for (const product of rows) {
         const key = product.name.trim().toLowerCase();
         const existing = dedupedProducts.get(key);
 
-        if (!existing || scoreProduct(product) > scoreProduct(existing)) {
+        if (!existing) {
           dedupedProducts.set(key, product);
+        } else {
+          // Two DB rows with the same product name (e.g. one eBay, one Squarespace
+          // not yet fully merged). Combine their data so the dashboard shows a
+          // single unified row rather than silently discarding one of them.
+          const combined: ProductWithDetails = {
+            ...existing,
+            total_stock: existing.total_stock + product.total_stock,
+            ebay_price: existing.ebay_price ?? product.ebay_price,
+            squarespace_price: existing.squarespace_price ?? product.squarespace_price,
+            channel_listings: [
+              ...existing.channel_listings,
+              ...product.channel_listings.filter(
+                (l) => !existing.channel_listings.some((el) => el.id === l.id),
+              ),
+            ],
+            variants: [
+              ...existing.variants,
+              ...product.variants.filter(
+                (v) => !existing.variants.some((ev) => ev.id === v.id),
+              ),
+            ],
+            inventory: [
+              ...existing.inventory,
+              ...product.inventory.filter(
+                (i) => !existing.inventory.some((ei) => ei.id === i.id),
+              ),
+            ],
+          };
+          dedupedProducts.set(key, combined);
         }
       }
 

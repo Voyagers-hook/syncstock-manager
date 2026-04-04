@@ -187,7 +187,7 @@ async function pushSquarespaceUpdate(
     const resp = await fetch(
       `${SQ_API_V2_BASE}/commerce/products/${productId}/variants/${variantId}`,
       {
-        method: "POST",
+        method: "PUT",
         headers: {
           Authorization: `Bearer ${apiKey}`,
           "Content-Type": "application/json",
