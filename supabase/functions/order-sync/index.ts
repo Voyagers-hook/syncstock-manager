@@ -36,6 +36,7 @@ Deno.serve(async (req) => {
     : new Date(Date.now() - 24 * 60 * 60 * 1000);   // first run: last 24 h
 
   const now = new Date();
+
   let ebayProcessed = 0;
   let sqProcessed   = 0;
   const errors: string[] = [];
@@ -46,11 +47,9 @@ Deno.serve(async (req) => {
       try {
         const { data: tokenRow } = await supabase
           .from("sync_secrets").select("value").eq("key", "ebay_refresh_token").single();
-
         if (tokenRow?.value) {
           const ebayToken = await getEbayAccessToken(ebayAppId, ebayCertId, tokenRow.value, supabase);
           const ebayOrders = await fetchEbayOrders(ebayToken, since, now);
-
           for (const txn of ebayOrders) {
             try {
               if (await processEbayTransaction(supabase, txn, sqApiKey)) ebayProcessed++;
@@ -68,7 +67,6 @@ Deno.serve(async (req) => {
     if (sqApiKey) {
       try {
         const sqOrders = await fetchSquarespaceOrders(sqApiKey, since);
-
         for (const order of sqOrders) {
           for (const li of order.lineItems) {
             try {
@@ -142,7 +140,6 @@ async function getEbayAccessToken(appId: string, certId: string, refreshToken: s
   });
   if (!resp.ok) throw new Error(`eBay token exchange failed [${resp.status}]`);
   const data = await resp.json();
-
   if (data.refresh_token && data.refresh_token !== refreshToken) {
     await supabase.from("sync_secrets").upsert(
       { key: "ebay_refresh_token", value: data.refresh_token, updated_at: new Date().toISOString() },
@@ -168,7 +165,6 @@ interface EbayTxn {
 async function fetchEbayOrders(token: string, since: Date, until: Date): Promise<EbayTxn[]> {
   const txns: EbayTxn[] = [];
   let page = 1;
-
   while (true) {
     const body = `<?xml version="1.0" encoding="utf-8"?>
 <GetOrdersRequest xmlns="urn:ebay:apis:eBLBaseComponents">
@@ -179,7 +175,6 @@ async function fetchEbayOrders(token: string, since: Date, until: Date): Promise
   <OrderStatus>Completed</OrderStatus>
   <Pagination><EntriesPerPage>100</EntriesPerPage><PageNumber>${page}</PageNumber></Pagination>
 </GetOrdersRequest>`;
-
     const resp = await fetch(`${EBAY_API_BASE}/ws/api.dll`, {
       method: "POST",
       headers: {
@@ -191,10 +186,8 @@ async function fetchEbayOrders(token: string, since: Date, until: Date): Promise
       body,
     });
     if (!resp.ok) throw new Error(`GetOrders [${resp.status}]`);
-
     const xml = await resp.text();
     txns.push(...parseEbayOrders(xml));
-
     const tp = xml.match(/<TotalNumberOfPages>(\d+)<\/TotalNumberOfPages>/);
     if (page >= (tp ? parseInt(tp[1]) : 1)) break;
     page++;
@@ -210,7 +203,6 @@ function parseEbayOrders(xml: string): EbayTxn[] {
     const oXml = om[1];
     const orderId     = extractTag(oXml, "OrderID") ?? "";
     const createdTime = extractTag(oXml, "CreatedTime") ?? new Date().toISOString();
-
     const txRe = /<Transaction>([\s\S]*?)<\/Transaction>/g;
     let tm;
     while ((tm = txRe.exec(oXml)) !== null) {
@@ -219,7 +211,6 @@ function parseEbayOrders(xml: string): EbayTxn[] {
       const itemTitle = extractTag(tXml, "Title") ?? "";
       const quantity  = parseInt(extractTag(tXml, "QuantityPurchased") ?? "1");
       const price     = parseFloat(extractTag(tXml, "TransactionPrice") ?? "0");
-
       let variationSku: string | null = null;
       let variationName: string | null = null;
       const vm = tXml.match(/<Variation>([\s\S]*?)<\/Variation>/);
@@ -234,7 +225,6 @@ function parseEbayOrders(xml: string): EbayTxn[] {
         }
         variationName = names.join(" / ") || null;
       }
-
       if (itemId) txns.push({ orderId, createdTime, itemId, itemTitle, variationSku, variationName, quantity, price });
     }
   }
@@ -249,6 +239,7 @@ interface SqOrder {
   createdOn: string;
   lineItems: SqLineItem[];
 }
+
 interface SqLineItem {
   variantId: string;
   sku: string;
@@ -257,23 +248,24 @@ interface SqLineItem {
   productName: string;
 }
 
+// FIXED: Squarespace requires BOTH modifiedAfter AND modifiedBefore together.
+// Cursor cannot be combined with date params — pagination uses cursor alone.
 async function fetchSquarespaceOrders(apiKey: string, since: Date): Promise<SqOrder[]> {
   const all: SqOrder[] = [];
+  const until = new Date();
   let cursor: string | undefined;
 
   while (true) {
-    const url = cursor
-      ? `${SQ_API_BASE}/commerce/orders?modifiedAfter=${since.toISOString()}&cursor=${cursor}`
-      : `${SQ_API_BASE}/commerce/orders?modifiedAfter=${since.toISOString()}`;
+    const params = cursor
+      ? `cursor=${cursor}`
+      : `modifiedAfter=${since.toISOString()}&modifiedBefore=${until.toISOString()}`;
 
-    const resp = await fetch(url, {
-      headers: { Authorization: `Bearer ${apiKey}`, "User-Agent": "LovableSync/1.0" },
+    const resp = await fetch(`${SQ_API_BASE}/commerce/orders?${params}`, {
+      headers: { Authorization: `Bearer ${apiKey}`, "User-Agent": "SyncStock/1.0" },
     });
     if (!resp.ok) throw new Error(`SQ orders [${resp.status}]`);
-
     const data = await resp.json();
     all.push(...(data.result ?? []));
-
     if (data.pagination?.hasNextPage && data.pagination?.nextPageCursor) {
       cursor = data.pagination.nextPageCursor;
     } else break;
@@ -386,7 +378,6 @@ async function processSquarespaceLineItem(
 async function pushStockToSquarespace(supabase: any, variantId: string, stock: number, apiKey: string) {
   const { data: listings } = await supabase.from("channel_listings")
     .select("channel_variant_id").eq("variant_id", variantId).eq("channel", "squarespace");
-
   for (const l of listings ?? []) {
     if (!l.channel_variant_id) continue;
     const resp = await fetch(`${SQ_API_BASE}/commerce/inventory/adjustments`, {
@@ -409,7 +400,6 @@ async function pushStockToSquarespace(supabase: any, variantId: string, stock: n
 async function pushStockToEbay(supabase: any, variantId: string, stock: number, token: string) {
   const { data: listings } = await supabase.from("channel_listings")
     .select("channel_product_id, channel_sku").eq("variant_id", variantId).eq("channel", "ebay");
-
   for (const l of listings ?? []) {
     const itemId = l.channel_product_id?.match(/(\d+)/)?.[1] ?? l.channel_product_id;
     const xml = `<?xml version="1.0" encoding="utf-8"?>
@@ -421,7 +411,6 @@ async function pushStockToEbay(supabase: any, variantId: string, stock: number, 
     <Quantity>${stock}</Quantity>
   </InventoryStatus>
 </ReviseInventoryStatusRequest>`;
-
     await fetch(`${EBAY_API_BASE}/ws/api.dll`, {
       method: "POST",
       headers: {
@@ -434,4 +423,3 @@ async function pushStockToEbay(supabase: any, variantId: string, stock: number, 
     });
   }
 }
-// force-redeploy-1775234222
