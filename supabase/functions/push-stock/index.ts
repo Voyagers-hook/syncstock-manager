@@ -14,6 +14,7 @@ const BodySchema = z.object({
   variantId: z.string().uuid(),
   stock: z.number().int().min(0).optional(),
   price: z.number().min(0).optional(),
+  channel: z.string().optional(),
 });
 
 Deno.serve(async (req) => {
@@ -29,7 +30,7 @@ Deno.serve(async (req) => {
     });
   }
 
-  const { variantId, stock, price } = parsed.data;
+  const { variantId, stock, price, channel } = parsed.data;
   const supabase = createClient(
     Deno.env.get("SUPABASE_URL")!,
     Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
@@ -59,10 +60,13 @@ Deno.serve(async (req) => {
     });
   }
 
+  // If a specific channel was requested, only update that channel's listing
+  const targetListings = channel ? listings.filter((l: any) => l.channel === channel) : listings;
+
   const results: { channel: string; status: string; message?: string }[] = [];
   let ebayToken: string | null = null;
 
-  for (const listing of listings) {
+  for (const listing of targetListings) {
     try {
       if (listing.channel === "ebay") {
         if (!ebayToken) {

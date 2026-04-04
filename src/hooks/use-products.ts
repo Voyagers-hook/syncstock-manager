@@ -211,10 +211,12 @@ export function useUpdateChannelPrice() {
       listingId,
       variantId,
       price,
+      channel,
     }: {
       listingId: string;
       variantId: string;
       price: number;
+      channel: string;
     }) => {
       // 1. Save price to DB
       const { error } = await supabase
@@ -228,9 +230,9 @@ export function useUpdateChannelPrice() {
         .update({ needs_sync: false, updated_at: new Date().toISOString() })
         .eq("id", variantId);
 
-      // 2. Push price to both platforms immediately
+      // 2. Push price only to the specific channel being edited
       const { data, error: pushError } = await supabase.functions.invoke("push-stock", {
-        body: { variantId, price },
+        body: { variantId, price, channel },
       });
 
       if (pushError) {
