@@ -206,7 +206,7 @@ async function upsertProducts(supabase: any, squarespaceProducts: SqProduct[]) {
     squarespaceProducts.flatMap((product) => product.variants.map((variant) => variant.id)),
   );
 
-  const listingByExternalVariantId = new Map<string, { id: string; variant_id: string; product_id: string | null }>();
+  const listingByExternalVariantId = new Map<string, { id: string; variant_id: string; product_id: string | null | undefined }>();
   for (const listing of existingListings) {
     if (!listingByExternalVariantId.has(listing.channel_variant_id)) {
       listingByExternalVariantId.set(listing.channel_variant_id, {

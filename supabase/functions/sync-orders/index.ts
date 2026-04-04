@@ -98,7 +98,7 @@ Deno.serve(async (req) => {
       status: stats.errors.length === 0 ? "completed" : "partial",
       details: JSON.stringify(stats),
       source: "edge_function",
-    }).catch(() => {});
+    });
 
     return new Response(JSON.stringify({ success: true, ...stats }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
