@@ -8,7 +8,6 @@ const corsHeaders = {
 
 const EBAY_API_BASE = "https://api.ebay.com";
 const SQ_API_BASE = "https://api.squarespace.com/1.0";
-const SQ_API_V2_BASE = "https://api.squarespace.com/v2";
 
 const BodySchema = z.object({
   variantId: z.string().uuid(),
@@ -22,7 +21,6 @@ Deno.serve(async (req) => {
 
   const body = await req.json().catch(() => null);
   const parsed = BodySchema.safeParse(body);
-
   if (!parsed.success) {
     return new Response(JSON.stringify({ error: "Invalid body", details: parsed.error.issues }), {
       status: 400,
@@ -31,6 +29,7 @@ Deno.serve(async (req) => {
   }
 
   const { variantId, stock, price, channel } = parsed.data;
+
   const supabase = createClient(
     Deno.env.get("SUPABASE_URL")!,
     Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
@@ -60,7 +59,7 @@ Deno.serve(async (req) => {
     });
   }
 
-  // If a specific channel was requested, only update that channel's listing
+  // Only update the listings for the requested channel
   const targetListings = channel ? listings.filter((l: any) => l.channel === channel) : listings;
 
   const results: { channel: string; status: string; message?: string }[] = [];
@@ -85,7 +84,6 @@ Deno.serve(async (req) => {
   }
 
   const anyFailed = results.some((r) => r.status === "error");
-
   return new Response(
     JSON.stringify({ ok: !anyFailed, results }),
     {
@@ -96,7 +94,6 @@ Deno.serve(async (req) => {
 });
 
 // ── eBay: ReviseInventoryStatus (Trading API, OAuth token) ────────────────────
-
 async function pushEbayUpdate(
   listing: any,
   stock: number | undefined,
@@ -105,12 +102,10 @@ async function pushEbayUpdate(
 ): Promise<string> {
   const itemId = listing.channel_product_id?.replace(/^v1\|/, "").replace(/\|.*$/, "") ||
     listing.channel_product_id;
-
   if (!itemId) throw new Error("Missing eBay item ID");
 
   const priceXml = price !== undefined ? `<StartPrice>${price.toFixed(2)}</StartPrice>` : "";
   const stockXml = stock !== undefined ? `<Quantity>${stock}</Quantity>` : "";
-
   if (!priceXml && !stockXml) return "nothing to update";
 
   const isVariation = listing.channel_variant_id &&
@@ -143,18 +138,15 @@ async function pushEbayUpdate(
   });
 
   const respText = await resp.text();
-
   if (respText.includes("<Ack>Failure</Ack>") || respText.includes("<Ack>PartialFailure</Ack>")) {
     const errMatch = respText.match(/<LongMessage>(.*?)<\/LongMessage>/);
-    const errMsg = errMatch ? errMatch[1] : "eBay API returned Failure";
-    throw new Error(errMsg);
+    throw new Error(errMatch ? errMatch[1] : "eBay API returned Failure");
   }
 
   return "ok";
 }
 
-// ── Squarespace: set inventory to absolute quantity ──────────────────────────
-
+// ── Squarespace: stock via inventory adjustments, price via variant endpoint ──
 async function pushSquarespaceUpdate(
   listing: any,
   stock: number | undefined,
@@ -164,6 +156,7 @@ async function pushSquarespaceUpdate(
   const variantId = listing.channel_variant_id;
   if (!variantId) throw new Error("Missing Squarespace variant ID");
 
+  // Stock update — inventory adjustments endpoint (unchanged)
   if (stock !== undefined) {
     const resp = await fetch(`${SQ_API_BASE}/commerce/inventory/adjustments`, {
       method: "POST",
@@ -177,83 +170,52 @@ async function pushSquarespaceUpdate(
         setFiniteOperations: [{ variantId, quantity: stock }],
       }),
     });
-
     if (!resp.ok) {
       const body = await resp.text();
       throw new Error(`Squarespace inventory update failed [${resp.status}]: ${body.slice(0, 200)}`);
     }
   }
 
+  // Price update — always use the variant endpoint directly, never product-level
   if (price !== undefined) {
     const productId = listing.channel_product_id;
     if (!productId) throw new Error("Missing Squarespace product ID for price update");
+    if (!variantId) throw new Error("Missing Squarespace variant ID for price update");
 
-    const sqHeaders = {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-      "User-Agent": "SyncStock/1.0",
-    };
-    const priceEndpoint = `${SQ_API_BASE}/commerce/products/${productId}`;
-    const ERROR_BODY_LIMIT = 300;
-
-    // First try product-level pricing (works for single products)
-    const resp = await fetch(priceEndpoint, {
-      method: "POST",
-      headers: sqHeaders,
-      body: JSON.stringify({
-        pricing: {
-          basePrice: {
-            value: price.toFixed(2),
-            currency: "GBP",
-          },
+    const resp = await fetch(
+      `${SQ_API_BASE}/commerce/products/${productId}/variants/${variantId}`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+          "User-Agent": "SyncStock/1.0",
         },
-      }),
-    });
+        body: JSON.stringify({
+          pricing: {
+            basePrice: {
+              value: price.toFixed(2),
+              currency: "GBP",
+            },
+          },
+        }),
+      }
+    );
 
     if (!resp.ok) {
-      // Only fall back to variant-level pricing on 400 (field not supported for single products).
-      // Other errors (401, 403, 5xx) indicate auth or server issues — surface them immediately.
-      if (resp.status !== 400) {
-        const body = await resp.text();
-        throw new Error(`Squarespace price update failed [${resp.status}]: ${body.slice(0, ERROR_BODY_LIMIT)}`);
-      }
-
-      // Fall back to variant-level pricing for multi-variant products
-      const fallbackResp = await fetch(priceEndpoint, {
-        method: "POST",
-        headers: sqHeaders,
-        body: JSON.stringify({
-          variants: [
-            {
-              id: variantId,
-              pricing: {
-                basePrice: {
-                  value: price.toFixed(2),
-                  currency: "GBP",
-                },
-              },
-            },
-          ],
-        }),
-      });
-
-      if (!fallbackResp.ok) {
-        const body = await fallbackResp.text();
-        throw new Error(`Squarespace price update failed [${fallbackResp.status}]: ${body.slice(0, ERROR_BODY_LIMIT)}`);
-      }
+      const body = await resp.text();
+      throw new Error(`Squarespace price update failed [${resp.status}]: ${body.slice(0, 300)}`);
     }
   }
 }
 
 // ── eBay OAuth: exchange refresh_token for access_token ──────────────────────
-
 async function getEbayAccessToken(supabase: any): Promise<string> {
   const { data, error } = await supabase
     .from("sync_secrets")
     .select("value")
     .eq("key", "ebay_refresh_token")
     .single();
-
   if (error || !data?.value) throw new Error("eBay refresh token not found in sync_secrets");
 
   const appId = Deno.env.get("EBAY_APP_ID");
@@ -261,7 +223,6 @@ async function getEbayAccessToken(supabase: any): Promise<string> {
   if (!appId || !certId) throw new Error("EBAY_APP_ID or EBAY_CERT_ID env var not set");
 
   const credentials = btoa(`${appId}:${certId}`);
-
   const resp = await fetch(`${EBAY_API_BASE}/identity/v1/oauth2/token`, {
     method: "POST",
     headers: {
@@ -279,7 +240,5 @@ async function getEbayAccessToken(supabase: any): Promise<string> {
   if (!json.access_token) {
     throw new Error(`eBay token refresh failed: ${JSON.stringify(json)}`);
   }
-
   return json.access_token;
 }
-// force-redeploy-1775234222
