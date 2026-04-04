@@ -65,11 +65,10 @@ Deno.serve(async (req) => {
 
       for (const order of sqOrders) {
         const { data: alreadyProcessed } = await supabase
-          .from("processed_orders")
+          .from("sync_secrets")
           .select("id")
-          .eq("channel", "squarespace")
-          .eq("order_id", order.id)
-          .single();
+          .eq("key", `processed_sq_${order.id}`)
+          .maybeSingle();
 
         if (alreadyProcessed) continue;
 
