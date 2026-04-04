@@ -267,7 +267,7 @@ async function bulkInsert(supabase: any, items: EbayItem[]) {
       const chunk = allISkus.slice(i, i + LOOKUP_CHUNK);
       const { data: existing } = await supabase
         .from("variants").select("id, internal_sku").in("internal_sku", chunk);
-      for (const v of (existing ?? [])) variantByISku.set(v.internal_sku, v.id);
+      for (const v of (existing ?? []) as any[]) variantByISku.set(v.internal_sku, v.id);
     }
   }
   // Insert only genuinely new variants
