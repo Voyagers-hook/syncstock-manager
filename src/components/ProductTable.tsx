@@ -47,9 +47,9 @@ const ProductTable = () => {
 
   const handleSavePrice = (p: ProductWithDetails, channel: "ebay" | "squarespace", newPrice: number) => {
     const listing = p.channel_listings.find((l) => l.channel === channel);
-    if (!listing || !p.variants[0]) return;
+    if (!listing) return;
     updateChannelPrice.mutate(
-      { listingId: listing.id, variantId: p.variants[0].id, price: newPrice, channel },
+      { listingId: listing.id, variantId: listing.variant_id, price: newPrice, channel },
       {
         onSuccess: () => toast.success(`${channel === "ebay" ? "eBay" : "Sqsp"} price updated to £${newPrice.toFixed(2)}`),
         onError: () => toast.error("Failed to update price"),
