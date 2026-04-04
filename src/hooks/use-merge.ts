@@ -39,14 +39,21 @@ export function useUnmergedProducts() {
       const allVariantIds = products.flatMap((p: any) => (p.variants ?? []).map((v: any) => v.id));
       if (allVariantIds.length === 0) return [];
 
-      // Fetch all channel_listings for these variants
-      const { data: allListings } = await supabase
-        .from("channel_listings")
-        .select("*")
-        .in("variant_id", allVariantIds);
+      // Fetch channel_listings in chunks to avoid URL / query-size limits
+      const CHUNK = 150;
+      const allListings: any[] = [];
+      for (let i = 0; i < allVariantIds.length; i += CHUNK) {
+        const chunk = allVariantIds.slice(i, i + CHUNK);
+        const { data, error } = await supabase
+          .from("channel_listings")
+          .select("*")
+          .in("variant_id", chunk);
+        if (error) throw error;
+        if (data) allListings.push(...data);
+      }
 
       const listingsByProduct = new Map<string, any[]>();
-      for (const l of (allListings ?? [])) {
+      for (const l of allListings) {
         // Find which product this variant belongs to
         for (const p of products) {
           if ((p as any).variants?.some((v: any) => v.id === l.variant_id)) {
