@@ -227,7 +227,7 @@ async function bulkInsert(supabase: any, items: EbayItem[]) {
 
   if (uniqueNewProds.length > 0) {
     const { data: inserted } = await supabase.from("products").insert(uniqueNewProds).select("id, sku");
-    for (const p of (inserted ?? [])) existingSkuMap.set(p.sku, p.id);
+    for (const p of (inserted ?? []) as any[]) existingSkuMap.set(p.sku, p.id);
   }
 
   const productBySku = existingSkuMap;
