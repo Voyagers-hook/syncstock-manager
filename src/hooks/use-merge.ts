@@ -85,17 +85,7 @@ export function useUnmergedProducts() {
   });
 }
 
-// Normalise a variant option string for fuzzy matching.
-// Lowercases, trims, and extracts the last segment after " - " so that
-// e.g. "Carp - Green" matches "Green".
-function normalizeOption(opt: string | null | undefined): string {
-  if (!opt) return "";
-  const lower = opt.trim().toLowerCase();
-  const parts = lower.split(" - ");
-  return parts[parts.length - 1].trim();
-}
-
-// ─── FIXED MERGE LOGIC v2 ────────────────────────────────────────────
+// ─── FIXED MANUAL MERGE LOGIC ────────────────────────────────────────────
 export function useMergeProducts() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -106,47 +96,39 @@ export function useMergeProducts() {
       keepId: string;
       removeId: string;
     }) => {
+      // Get all variants for the product being removed
       const { data: removeVariants } = await supabase
         .from("variants")
         .select("*")
         .eq("product_id", removeId);
-      const { data: keepVariants } = await supabase
-        .from("variants")
-        .select("*")
-        .eq("product_id", keepId);
 
-      if (!removeVariants || !keepVariants) throw new Error("Missing data");
+      if (!removeVariants) throw new Error("Missing removed variants");
 
       for (const rv of removeVariants) {
-        // Fuzzy match: normalise option strings before comparing
-        const match = keepVariants.find(
-          (kv) =>
-            normalizeOption(kv.option1) === normalizeOption(rv.option1) &&
-            normalizeOption(kv.option2) === normalizeOption(rv.option2)
-        );
+        // Create a new variant under the kept product with the SAME options as the removed one
+        const { data: [newVariant], error: createErr } = await supabase
+          .from("variants")
+          .insert({
+            product_id: keepId,
+            option1: rv.option1,
+            option2: rv.option2,
+            // Copy other fields as needed (e.g. sku, barcode)
+          })
+          .select();
 
-        if (match) {
-          await supabase
-            .from("channel_listings")
-            .update({ variant_id: match.id })
-            .eq("variant_id", rv.id);
+        if (createErr || !newVariant) throw new Error("Failed to create new variant on kept product");
 
-          await consolidateInventory(match.id, rv.id);
+        // Move channel listings to the new variant
+        await supabase
+          .from("channel_listings")
+          .update({ variant_id: newVariant.id })
+          .eq("variant_id", rv.id);
 
-          await supabase.from("variants").delete().eq("id", rv.id);
-        } else {
-          // No matching variant — move listings to first keep variant to avoid
-          // creating a duplicate variant under the kept product.
-          const firstKeep = keepVariants[0];
-          if (firstKeep) {
-            await supabase
-              .from("channel_listings")
-              .update({ variant_id: firstKeep.id })
-              .eq("variant_id", rv.id);
-            await consolidateInventory(firstKeep.id, rv.id);
-          }
-          await supabase.from("variants").delete().eq("id", rv.id);
-        }
+        // Move inventory to the new variant (and delete old)
+        await consolidateInventory(newVariant.id, rv.id);
+
+        // Delete the removed variant
+        await supabase.from("variants").delete().eq("id", rv.id);
       }
 
       // Clean up any orphan variants that remain on the removed product
@@ -166,6 +148,7 @@ export function useMergeProducts() {
         .from("products")
         .update({ active: false })
         .eq("id", removeId);
+
       return { keepId };
     },
     onSuccess: () => {
