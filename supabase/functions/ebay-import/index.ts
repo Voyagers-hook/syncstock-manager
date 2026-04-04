@@ -334,7 +334,7 @@ async function bulkInsert(supabase: any, items: EbayItem[]) {
   for (let i = 0; i < invRows.length; i += 150) {
     const chunk = invRows.slice(i, i + 150).map(r => r.variant_id);
     const { data: existing } = await supabase.from("inventory").select("variant_id").in("variant_id", chunk);
-    for (const inv of (existing ?? [])) existingInvSet.add(inv.variant_id);
+    for (const inv of (existing ?? []) as any[]) existingInvSet.add(inv.variant_id);
   }
   // Update existing
   for (const row of invRows) {
