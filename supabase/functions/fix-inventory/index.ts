@@ -46,7 +46,8 @@ serve(async (req) => {
           // No inventory at all → create with stock 0
           const { error } = await sb.from("inventory").insert({
             variant_id: variant.id,
-            stock: 0,
+            product_id: product.id,
+            total_stock: 0,
           });
           if (!error) {
             fixes.push(`Created missing inventory for variant ${variant.id} (product: ${product.name}, option: ${variant.option1 ?? 'default'})`);
