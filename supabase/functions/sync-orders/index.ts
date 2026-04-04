@@ -28,11 +28,10 @@ Deno.serve(async (req) => {
       
       for (const order of ebayOrders) {
         const { data: alreadyProcessed } = await supabase
-          .from("processed_orders")
+          .from("sync_secrets")
           .select("id")
-          .eq("channel", "ebay")
-          .eq("order_id", order.orderId)
-          .single();
+          .eq("key", `processed_ebay_${order.orderId}`)
+          .maybeSingle();
 
         if (alreadyProcessed) continue;
 
