@@ -240,7 +240,21 @@ const ProductTable = () => {
                                         }
                                       />
                                     ) : (
-                                      <span className="text-xs text-muted-foreground">—</span>
+                                      <InlineEditCell
+                                        value={0}
+                                        prefix=""
+                                        align="center"
+                                        className="font-semibold text-muted-foreground"
+                                        onSave={(val) =>
+                                          createInventory.mutate(
+                                            { variantId: v.id, productId: product.id, stock: val },
+                                            {
+                                              onSuccess: () => toast.success(`Inventory created with stock ${val}`),
+                                              onError: () => toast.error("Failed to create inventory"),
+                                            }
+                                          )
+                                        }
+                                      />
                                     )}
                                   </td>
                                   <td className="px-3 py-2 text-right">

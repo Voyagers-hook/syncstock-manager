@@ -290,12 +290,10 @@ export function useUpdateInventory() {
       });
 
       if (syncError) {
-        // Non-fatal: stock is saved locally, push failed
         console.warn("push-stock network error:", syncError.message);
         return { pushError: syncError.message };
       }
 
-      // Check if any channel push failed (push-stock returns 207 for partial failures)
       const failedChannels = (data?.results ?? [])
         .filter((r: any) => r.status === "error")
         .map((r: any) => r.channel);
@@ -307,6 +305,33 @@ export function useUpdateInventory() {
       return data;
     },
     onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["products"] });
+    },
+  });
+}
+
+export function useCreateInventory() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({
+      variantId,
+      productId,
+      stock,
+    }: {
+      variantId: string;
+      productId: string;
+      stock: number;
+    }) => {
+      const { data, error } = await supabase
+        .from("inventory")
+        .insert({ variant_id: variantId, product_id: productId, total_stock: stock })
+        .select("id")
+        .single();
+      if (error) throw error;
+      return data;
+    },
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["products"] });
     },
   });
