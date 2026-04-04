@@ -2,7 +2,7 @@ import { useState, useMemo } from "react";
 import { ChevronDown, ChevronRight, Loader2, Search, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
-import { useProducts, useUpdateProduct, useUpdateChannelPrice, useUpdateInventory, useDeleteProduct } from "@/hooks/use-products";
+import { useProducts, useUpdateProduct, useUpdateChannelPrice, useUpdateInventory, useCreateInventory, useDeleteProduct } from "@/hooks/use-products";
 import type { ProductWithDetails } from "@/lib/types";
 import { toast } from "sonner";
 import InlineEditCell from "./InlineEditCell";
