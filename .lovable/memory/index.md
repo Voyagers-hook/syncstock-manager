@@ -2,7 +2,7 @@
 
 ## Core
 Fishing tackle inventory tracker. eBay + Squarespace sync. Single user, no auth.
-Lovable Cloud Supabase: ymztzqmhtxygzebrofrp.supabase.co.
+Lovable Cloud Supabase: czoppjnkjxmduldxlbqh.supabase.co.
 Tables: products, variants, inventory, channel_listings, orders, sync_log, sync_secrets.
 Dark warehouse theme. Primary teal. Inter font. £ GBP currency.
 
