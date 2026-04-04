@@ -93,7 +93,7 @@ Deno.serve(async (req) => {
   );
 });
 
-// ── eBay: ReviseInventoryStatus (Trading API, OAuth token) ────────────────────
+// ── eBay: ReviseInventoryStatus (SKU-based) or ReviseItem (VariationSpecifics) ──
 async function pushEbayUpdate(
   listing: any,
   stock: number | undefined,
@@ -104,13 +104,50 @@ async function pushEbayUpdate(
     listing.channel_product_id;
   if (!itemId) throw new Error("Missing eBay item ID");
 
-  const priceXml = price !== undefined ? `<StartPrice>${price.toFixed(2)}</StartPrice>` : "";
-  const stockXml = stock !== undefined ? `<Quantity>${stock}</Quantity>` : "";
-  if (!priceXml && !stockXml) return "nothing to update";
+  if (!stock && stock !== 0 && !price) return "nothing to update";
 
+  // Detect variation listing: channel_variant_id is not empty and not just digits
   const isVariation = listing.channel_variant_id &&
     listing.channel_variant_id !== "" &&
     !/^\d+$/.test(listing.channel_variant_id);
+
+  if (isVariation) {
+    // Try SKU-based first (ReviseInventoryStatus) — works if channel_sku is set
+    if (listing.channel_sku) {
+      return await reviseInventoryStatus(itemId, listing.channel_sku, stock, price, token);
+    }
+
+    // No SKU — parse VariationSpecifics from channel_variant_id
+    // Format: "ItemID_Name1:Value1_Name2:Value2" or "ItemID_Name:Value"
+    const specificsStr = listing.channel_variant_id.replace(/^\d+_/, "");
+    const nameValuePairs = specificsStr.split("_").map((pair: string) => {
+      const colonIdx = pair.indexOf(":");
+      if (colonIdx === -1) return null;
+      return { name: pair.substring(0, colonIdx), value: pair.substring(colonIdx + 1) };
+    }).filter(Boolean);
+
+    if (nameValuePairs.length === 0) {
+      throw new Error(`Cannot identify eBay variation — no SKU set and could not parse channel_variant_id: ${listing.channel_variant_id}`);
+    }
+
+    return await reviseItemVariation(itemId, nameValuePairs, stock, price, token);
+  }
+
+  // Simple (non-variation) listing — use ReviseInventoryStatus without SKU
+  return await reviseInventoryStatus(itemId, null, stock, price, token);
+}
+
+// ReviseInventoryStatus — works for simple listings or variation listings with a known SKU
+async function reviseInventoryStatus(
+  itemId: string,
+  sku: string | null,
+  stock: number | undefined,
+  price: number | undefined,
+  token: string
+): Promise<string> {
+  const priceXml = price !== undefined ? `<StartPrice>${price.toFixed(2)}</StartPrice>` : "";
+  const stockXml = stock !== undefined ? `<Quantity>${stock}</Quantity>` : "";
+  if (!priceXml && !stockXml) return "nothing to update";
 
   const xml = `<?xml version="1.0" encoding="utf-8"?>
 <ReviseInventoryStatusRequest xmlns="urn:ebay:apis:eBLBaseComponents">
@@ -119,7 +156,7 @@ async function pushEbayUpdate(
   </RequesterCredentials>
   <InventoryStatus>
     <ItemID>${itemId}</ItemID>
-    ${isVariation && listing.channel_sku ? `<SKU>${listing.channel_sku}</SKU>` : ""}
+    ${sku ? `<SKU>${sku}</SKU>` : ""}
     ${stockXml}
     ${priceXml}
   </InventoryStatus>
@@ -140,10 +177,65 @@ async function pushEbayUpdate(
   const respText = await resp.text();
   if (respText.includes("<Ack>Failure</Ack>") || respText.includes("<Ack>PartialFailure</Ack>")) {
     const errMatch = respText.match(/<LongMessage>(.*?)<\/LongMessage>/);
-    throw new Error(errMatch ? errMatch[1] : "eBay API returned Failure");
+    throw new Error(errMatch ? errMatch[1] : "eBay ReviseInventoryStatus returned Failure");
   }
-
   return "ok";
+}
+
+// ReviseItem with VariationSpecifics — used when no SKU is available but we know Name/Value pairs
+async function reviseItemVariation(
+  itemId: string,
+  nameValuePairs: { name: string; value: string }[],
+  stock: number | undefined,
+  price: number | undefined,
+  token: string
+): Promise<string> {
+  const specificsXml = nameValuePairs.map(({ name, value }: { name: string; value: string }) => `
+      <NameValueList>
+        <Name>${name}</Name>
+        <Value>${value}</Value>
+      </NameValueList>`).join("");
+
+  const priceXml = price !== undefined ? `<StartPrice>${price.toFixed(2)}</StartPrice>` : "";
+  const stockXml = stock !== undefined ? `<Quantity>${stock}</Quantity>` : "";
+  if (!priceXml && !stockXml) return "nothing to update";
+
+  const xml = `<?xml version="1.0" encoding="utf-8"?>
+<ReviseItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">
+  <RequesterCredentials>
+    <eBayAuthToken>${token}</eBayAuthToken>
+  </RequesterCredentials>
+  <Item>
+    <ItemID>${itemId}</ItemID>
+    <Variations>
+      <Variation>
+        <VariationSpecifics>${specificsXml}
+        </VariationSpecifics>
+        ${stockXml}
+        ${priceXml}
+      </Variation>
+    </Variations>
+  </Item>
+</ReviseItemRequest>`;
+
+  const resp = await fetch(`${EBAY_API_BASE}/ws/api.dll`, {
+    method: "POST",
+    headers: {
+      "X-EBAY-API-CALL-NAME": "ReviseItem",
+      "X-EBAY-API-SITEID": "3",
+      "X-EBAY-API-COMPATIBILITY-LEVEL": "1451",
+      "X-EBAY-API-APP-NAME": Deno.env.get("EBAY_APP_ID") ?? "",
+      "Content-Type": "text/xml",
+    },
+    body: xml,
+  });
+
+  const respText = await resp.text();
+  if (respText.includes("<Ack>Failure</Ack>") || respText.includes("<Ack>PartialFailure</Ack>")) {
+    const errMatch = respText.match(/<LongMessage>(.*?)<\/LongMessage>/);
+    throw new Error(errMatch ? errMatch[1] : "eBay ReviseItem returned Failure");
+  }
+  return "ok (via VariationSpecifics)";
 }
 
 // ── Squarespace: stock via inventory adjustments, price via variant endpoint ──
