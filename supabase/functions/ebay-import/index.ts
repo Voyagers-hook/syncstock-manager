@@ -208,7 +208,7 @@ function parseXml(xml: string): EbayItem[] {
 
 // ─── Bulk insert (3 round-trips, no upsert = no constraint dependency) ────────
 
-async function bulkInsert(supabase: ReturnType<typeof createClient>, items: EbayItem[]) {
+async function bulkInsert(supabase: any, items: EbayItem[]) {
   const now = new Date().toISOString();
 
   // ── Pass 1: insert products ───────────────────────────────────────────────
