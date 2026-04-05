@@ -192,17 +192,7 @@ async function upsertProducts(supabase: any, squarespaceProducts: SqProduct[]) {
     "id, name, active",
   );
 
-  const productIdByName = new Map<string, string>();
-  const productIsActiveByName = new Map<string, boolean>();
-  for (const product of existingProducts) {
-    if (!product.name) continue;
-
-    const selectedIsActive = productIsActiveByName.get(product.name);
-    if (!productIdByName.has(product.name) || (!selectedIsActive && product.active)) {
-      productIdByName.set(product.name, product.id);
-      productIsActiveByName.set(product.name, Boolean(product.active));
-    }
-  }
+  // productIdByName removed — no auto name-matching; user merges platforms manually
 
   const existingListings = await fetchExistingSquarespaceListings(
     supabase,
@@ -272,7 +262,9 @@ async function upsertProducts(supabase: any, squarespaceProducts: SqProduct[]) {
       .map((variant) => listingByExternalVariantId.get(variant.id))
       .find((listing): listing is { id: string; variant_id: string; product_id: string | null | undefined } => Boolean(listing));
 
-    let productId = canonicalListing?.product_id ?? productIdByName.get(sqProduct.name);
+    // Only use canonical listing lookup (by SQ variant ID) — never auto-match by name
+    // User links eBay ↔ Squarespace products manually via the Merge page
+    let productId = canonicalListing?.product_id ?? null;
 
     if (!productId) {
       const { data: product, error: prodErr } = await supabase
@@ -293,8 +285,6 @@ async function upsertProducts(supabase: any, squarespaceProducts: SqProduct[]) {
       }
 
       productId = product.id;
-      productIdByName.set(sqProduct.name, product.id);
-      productIsActiveByName.set(sqProduct.name, true);
       productsCreated++;
     } else {
       productsReused++;
