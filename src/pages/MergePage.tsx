@@ -76,8 +76,7 @@ function ProductMergeTab() {
   const [selectedEbay, setSelectedEbay] = useState<UnmergedProduct | null>(null);
   const [selectedSqsp, setSelectedSqsp] = useState<UnmergedProduct | null>(null);
 
-  // FIX: only filter when the user has actually typed something.
-  // Previously, search="" matched everything because "".includes("") is always true.
+  // Only show results when the user has typed something.
   const filtered = search.trim()
     ? unmerged.filter(
         (p) =>
@@ -179,14 +178,12 @@ function ProductMergeTab() {
 
       {!isLoading && !error && (
         <>
-          {/* Empty state — prompt to search */}
           {!search.trim() && (
             <div className="flex flex-col items-center justify-center p-16 text-center text-muted-foreground">
               <Search className="w-8 h-8 mb-3 opacity-40" />
               <p className="text-sm">Type a product name or SKU above to find items to merge</p>
             </div>
           )}
-
           {search.trim() && (
             <div className="grid grid-cols-2 gap-6">
               <ProductColumn
@@ -267,14 +264,13 @@ function VariantMergeTab() {
   const [selectedEbay, setSelectedEbay] = useState<UnmergedVariant | null>(null);
   const [selectedSqsp, setSelectedSqsp] = useState<UnmergedVariant | null>(null);
 
-  // FIX: only filter when the user has actually typed something.
-  // Previously, search="" matched everything because "".includes("") is always true.
+  // Search on product_name ONLY.
+  // We do NOT search variant_name or channel_sku — variant_name is often a raw
+  // SKU string (e.g. "SQ0415520") or a generic label like "Rod Only", which causes
+  // completely unrelated products to appear. The user searches for a product name.
   const filtered = search.trim()
-    ? variants.filter(
-        (v) =>
-          v.product_name.toLowerCase().includes(search.toLowerCase()) ||
-          v.variant_name.toLowerCase().includes(search.toLowerCase()) ||
-          (v.channel_sku?.toLowerCase().includes(search.toLowerCase()) ?? false)
+    ? variants.filter((v) =>
+        v.product_name.toLowerCase().includes(search.toLowerCase())
       )
     : [];
 
@@ -286,7 +282,6 @@ function VariantMergeTab() {
       toast.error("Select one variant from each channel");
       return;
     }
-    // Keep eBay variant, absorb Squarespace variant
     await merge.mutateAsync({
       keepVariantId: selectedEbay.variant_id,
       removeVariantId: selectedSqsp.variant_id,
@@ -301,7 +296,7 @@ function VariantMergeTab() {
         <div className="relative max-w-md flex-1">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
           <Input
-            placeholder="Search by product or variant name…"
+            placeholder="Search by product name…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="pl-10"
@@ -319,7 +314,7 @@ function VariantMergeTab() {
       </div>
 
       <p className="text-xs text-muted-foreground mb-4">
-        Search for a product, pick a specific eBay variant and its matching Squarespace variant, then click <strong>Link Variants</strong>. After linking they share the same inventory — a sale on either platform adjusts both.
+        Search for a product, pick the matching eBay and Squarespace variants, then click <strong>Link Variants</strong>. After linking they share the same inventory — a sale on either platform adjusts both.
       </p>
 
       {/* Selection preview */}
@@ -361,14 +356,12 @@ function VariantMergeTab() {
 
       {!isLoading && !error && (
         <>
-          {/* Empty state — prompt to search */}
           {!search.trim() && (
             <div className="flex flex-col items-center justify-center p-16 text-center text-muted-foreground">
               <Search className="w-8 h-8 mb-3 opacity-40" />
-              <p className="text-sm">Type a product or variant name above to find variants to link</p>
+              <p className="text-sm">Type a product name above to find variants to link</p>
             </div>
           )}
-
           {search.trim() && (
             <div className="grid grid-cols-2 gap-6">
               <VariantColumn
