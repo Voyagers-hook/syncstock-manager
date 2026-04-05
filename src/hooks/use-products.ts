@@ -133,9 +133,6 @@ export function useProducts() {
         if (!existing) {
           dedupedProducts.set(key, product);
         } else {
-          // Two DB rows with the same product name (e.g. one eBay, one Squarespace
-          // not yet fully merged). Combine their data so the dashboard shows a
-          // single unified row rather than silently discarding one of them.
           const combined: ProductWithDetails = {
             ...existing,
             total_stock: existing.total_stock + product.total_stock,
@@ -212,13 +209,15 @@ export function useUpdateChannelPrice() {
       variantId,
       price,
       channel,
+      priceType = "base",
     }: {
       listingId: string;
       variantId: string;
       price: number;
       channel: string;
+      priceType?: "base" | "sale";
     }) => {
-      // 1. Read the current price so we can roll back on push failure
+      // 1. Read current price for rollback
       const { data: currentRow, error: readError } = await supabase
         .from("channel_listings")
         .select("channel_price")
@@ -241,9 +240,9 @@ export function useUpdateChannelPrice() {
         .update({ needs_sync: false, updated_at: new Date().toISOString() })
         .eq("id", variantId);
 
-      // 3. Push price only to the specific channel being edited
+      // 3. Push price to channel — include priceType so Squarespace knows base vs sale
       const { data, error: pushError } = await supabase.functions.invoke("push-stock", {
-        body: { variantId, price, channel },
+        body: { variantId, price, channel, priceType },
       });
 
       const pushFailed =
@@ -251,8 +250,6 @@ export function useUpdateChannelPrice() {
         (data?.results ?? []).some((r: any) => r.status === "error");
 
       if (pushFailed) {
-        // Roll back DB price to the previous value so the dashboard stays in sync.
-        // Only attempt rollback if we successfully read the previous price.
         if (!readError) {
           const { error: rollbackError } = await supabase
             .from("channel_listings")
@@ -285,7 +282,6 @@ export function useDeleteProduct() {
 
   return useMutation({
     mutationFn: async (productId: string) => {
-      // Delete related rows first (no FK constraints but clean up)
       const { data: variants } = await supabase
         .from("variants")
         .select("id")
@@ -385,4 +381,3 @@ export function useCreateInventory() {
     },
   });
 }
-
