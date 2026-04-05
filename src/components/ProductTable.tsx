@@ -1,5 +1,5 @@
 import { useState, useMemo } from "react";
-import { ChevronDown, ChevronRight, Loader2, Search, Trash2 } from "lucide-react";
+import { ChevronDown, ChevronRight, Loader2, Search, Trash2, Tag } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { useProducts, useUpdateProduct, useUpdateChannelPrice, useUpdateInventory, useCreateInventory, useDeleteProduct } from "@/hooks/use-products";
@@ -10,6 +10,8 @@ import InlineEditCell from "./InlineEditCell";
 const ProductTable = () => {
   const [search, setSearch] = useState("");
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  // Track which product rows have sale price mode on for Squarespace
+  const [salePriceRows, setSalePriceRows] = useState<Set<string>>(new Set());
 
   const { data: allProducts = [], isLoading, error } = useProducts();
 
@@ -20,11 +22,24 @@ const ProductTable = () => {
       (p) => p.name.toLowerCase().includes(q) || (p.sku && p.sku.toLowerCase().includes(q))
     );
   }, [allProducts, search]);
+
   const updateProduct = useUpdateProduct();
   const updateChannelPrice = useUpdateChannelPrice();
   const updateInventory = useUpdateInventory();
   const deleteProduct = useDeleteProduct();
   const createInventory = useCreateInventory();
+
+  const toggleSalePrice = (productId: string) => {
+    setSalePriceRows((prev) => {
+      const next = new Set(prev);
+      if (next.has(productId)) {
+        next.delete(productId);
+      } else {
+        next.add(productId);
+      }
+      return next;
+    });
+  };
 
   const handleDelete = (p: ProductWithDetails) => {
     if (!confirm(`Delete "${p.name}"? This cannot be undone.`)) return;
@@ -45,13 +60,20 @@ const ProductTable = () => {
     );
   };
 
-  const handleSavePrice = (p: ProductWithDetails, channel: "ebay" | "squarespace", newPrice: number) => {
+  const handleSavePrice = (
+    p: ProductWithDetails,
+    channel: "ebay" | "squarespace",
+    newPrice: number
+  ) => {
     const listing = p.channel_listings.find((l) => l.channel === channel);
     if (!listing) return;
+    const priceType = channel === "squarespace" && salePriceRows.has(p.id) ? "sale" : "base";
+    const label = channel === "ebay" ? "eBay" : "Sqsp";
+    const modeLabel = priceType === "sale" ? " (sale)" : "";
     updateChannelPrice.mutate(
-      { listingId: listing.id, variantId: listing.variant_id, price: newPrice, channel },
+      { listingId: listing.id, variantId: listing.variant_id, price: newPrice, channel, priceType },
       {
-        onSuccess: () => toast.success(`${channel === "ebay" ? "eBay" : "Sqsp"} price updated to £${newPrice.toFixed(2)}`),
+        onSuccess: () => toast.success(`${label}${modeLabel} price updated to £${newPrice.toFixed(2)}`),
         onError: () => toast.error("Failed to update price"),
       }
     );
@@ -73,13 +95,34 @@ const ProductTable = () => {
     return <Badge className="bg-success text-success-foreground text-xs">OK</Badge>;
   };
 
-  const getMargin = (p: ProductWithDetails) => {
-    const cost = p.cost_price ?? 0;
-    const prices = [p.ebay_price, p.squarespace_price].filter(Boolean) as number[];
-    if (!prices.length || cost === 0) return "—";
-    const avgSell = prices.reduce((a, b) => a + b, 0) / prices.length;
-    if (avgSell === 0) return "—";
-    return ((avgSell - cost) / avgSell * 100).toFixed(1);
+  // Per-channel margin calculation including fees
+  const getMargins = (p: ProductWithDetails) => {
+    const cost = p.cost_price ? parseFloat(String(p.cost_price)) : null;
+    if (!cost || cost === 0) return { ebay: null, sqsp: null };
+
+    let ebayMargin: number | null = null;
+    if (p.ebay_price && p.ebay_price > 0) {
+      const sale = p.ebay_price;
+      // eBay: FVF 10.9% + £0.30 transaction + £0.12 regulatory, all + 20% VAT
+      const fees = (sale * 0.109 + 0.30 + 0.12) * 1.20;
+      ebayMargin = ((sale - cost - fees) / sale) * 100;
+    }
+
+    let sqspMargin: number | null = null;
+    if (p.squarespace_price && p.squarespace_price > 0) {
+      const sale = p.squarespace_price;
+      // Squarespace: 2% platform + blended ~3.5% payment fees = 5.5% total
+      const fees = sale * 0.055;
+      sqspMargin = ((sale - cost - fees) / sale) * 100;
+    }
+
+    return { ebay: ebayMargin, sqsp: sqspMargin };
+  };
+
+  const formatMargin = (margin: number | null) => {
+    if (margin === null) return "—";
+    const color = margin < 10 ? "text-destructive" : margin < 20 ? "text-warning-foreground" : "text-success";
+    return <span className={`text-sm font-medium ${color}`}>{margin.toFixed(1)}%</span>;
   };
 
   if (isLoading) {
@@ -128,14 +171,16 @@ const ProductTable = () => {
               <th className="text-right text-xs font-medium text-muted-foreground uppercase tracking-wider px-5 py-3">eBay Price</th>
               <th className="text-right text-xs font-medium text-muted-foreground uppercase tracking-wider px-5 py-3">Sqsp Price</th>
               <th className="text-right text-xs font-medium text-muted-foreground uppercase tracking-wider px-5 py-3">Cost</th>
-              <th className="text-right text-xs font-medium text-muted-foreground uppercase tracking-wider px-5 py-3">Margin</th>
+              <th className="text-right text-xs font-medium text-muted-foreground uppercase tracking-wider px-5 py-3">eBay Margin</th>
+              <th className="text-right text-xs font-medium text-muted-foreground uppercase tracking-wider px-5 py-3">Sqsp Margin</th>
               <th className="text-center text-xs font-medium text-muted-foreground uppercase tracking-wider px-5 py-3">Status</th>
               <th className="text-center text-xs font-medium text-muted-foreground uppercase tracking-wider px-2 py-3 w-10" />
             </tr>
           </thead>
           <tbody>
             {products.map((product) => {
-              const margin = getMargin(product);
+              const { ebay: ebayMargin, sqsp: sqspMargin } = getMargins(product);
+              const isSaleMode = salePriceRows.has(product.id);
               return (
                 <>
                   <tr key={product.id} className="border-b last:border-b-0 hover:bg-muted/30 transition-colors">
@@ -167,11 +212,30 @@ const ProductTable = () => {
                       />
                     </td>
                     <td className="px-5 py-3.5 text-right">
-                      <InlineEditCell
-                        value={product.squarespace_price}
-                        prefix="£"
-                        onSave={(v) => handleSavePrice(product, "squarespace", v)}
-                      />
+                      <div className="flex items-center justify-end gap-1.5">
+                        {/* Sale price toggle button for Squarespace */}
+                        <button
+                          onClick={() => toggleSalePrice(product.id)}
+                          title={isSaleMode ? "Currently setting SALE price — click to switch to base price" : "Currently setting BASE price — click to switch to sale price"}
+                          className={`p-0.5 rounded transition-colors ${
+                            isSaleMode
+                              ? "text-orange-500 hover:text-orange-600"
+                              : "text-muted-foreground hover:text-foreground"
+                          }`}
+                        >
+                          <Tag className="w-3 h-3" />
+                        </button>
+                        <InlineEditCell
+                          value={product.squarespace_price}
+                          prefix="£"
+                          onSave={(v) => handleSavePrice(product, "squarespace", v)}
+                        />
+                      </div>
+                      {isSaleMode && (
+                        <div className="text-right">
+                          <span className="text-[10px] text-orange-500 font-medium">sale price</span>
+                        </div>
+                      )}
                     </td>
                     <td className="px-5 py-3.5 text-right">
                       <InlineEditCell
@@ -182,7 +246,10 @@ const ProductTable = () => {
                       />
                     </td>
                     <td className="px-5 py-3.5 text-right">
-                      <span className="text-sm font-medium text-success">{margin}{margin !== "—" ? "%" : ""}</span>
+                      {formatMargin(ebayMargin)}
+                    </td>
+                    <td className="px-5 py-3.5 text-right">
+                      {formatMargin(sqspMargin)}
                     </td>
                     <td className="px-5 py-3.5 text-center">{getStockBadge(product.total_stock)}</td>
                     <td className="px-2 py-3.5 text-center">
@@ -197,7 +264,7 @@ const ProductTable = () => {
                   </tr>
                   {expandedId === product.id && product.variants.length > 0 && (
                     <tr key={`${product.id}-exp`} className="bg-muted/20">
-                      <td colSpan={10} className="px-5 py-3">
+                      <td colSpan={11} className="px-5 py-3">
                         <table className="w-full">
                           <thead>
                             <tr className="text-xs text-muted-foreground uppercase">
@@ -264,7 +331,7 @@ const ProductTable = () => {
                                         prefix="£"
                                         onSave={(val) =>
                                           updateChannelPrice.mutate(
-                                            { listingId: vEbay.id, variantId: v.id, price: val },
+                                            { listingId: vEbay.id, variantId: v.id, price: val, channel: "ebay", priceType: "base" },
                                             {
                                               onSuccess: () => toast.success(`eBay price updated to £${val.toFixed(2)}`),
                                               onError: () => toast.error("Failed to update price"),
@@ -278,19 +345,46 @@ const ProductTable = () => {
                                   </td>
                                   <td className="px-3 py-2 text-right">
                                     {vSqsp ? (
-                                      <InlineEditCell
-                                        value={vSqsp.channel_price}
-                                        prefix="£"
-                                        onSave={(val) =>
-                                          updateChannelPrice.mutate(
-                                            { listingId: vSqsp.id, variantId: v.id, price: val },
-                                            {
-                                              onSuccess: () => toast.success(`Sqsp price updated to £${val.toFixed(2)}`),
-                                              onError: () => toast.error("Failed to update price"),
-                                            }
-                                          )
-                                        }
-                                      />
+                                      <div>
+                                        <div className="flex items-center justify-end gap-1.5">
+                                          <button
+                                            onClick={() => toggleSalePrice(`${product.id}-${v.id}`)}
+                                            title={salePriceRows.has(`${product.id}-${v.id}`) ? "Sale price mode — click for base" : "Base price mode — click for sale"}
+                                            className={`p-0.5 rounded transition-colors ${
+                                              salePriceRows.has(`${product.id}-${v.id}`)
+                                                ? "text-orange-500 hover:text-orange-600"
+                                                : "text-muted-foreground hover:text-foreground"
+                                            }`}
+                                          >
+                                            <Tag className="w-3 h-3" />
+                                          </button>
+                                          <InlineEditCell
+                                            value={vSqsp.channel_price}
+                                            prefix="£"
+                                            onSave={(val) => {
+                                              const variantSaleMode = salePriceRows.has(`${product.id}-${v.id}`);
+                                              updateChannelPrice.mutate(
+                                                {
+                                                  listingId: vSqsp.id,
+                                                  variantId: v.id,
+                                                  price: val,
+                                                  channel: "squarespace",
+                                                  priceType: variantSaleMode ? "sale" : "base",
+                                                },
+                                                {
+                                                  onSuccess: () => toast.success(`Sqsp${variantSaleMode ? " sale" : ""} price updated to £${val.toFixed(2)}`),
+                                                  onError: () => toast.error("Failed to update price"),
+                                                }
+                                              );
+                                            }}
+                                          />
+                                        </div>
+                                        {salePriceRows.has(`${product.id}-${v.id}`) && (
+                                          <div className="text-right">
+                                            <span className="text-[10px] text-orange-500 font-medium">sale price</span>
+                                          </div>
+                                        )}
+                                      </div>
                                     ) : (
                                       <span className="text-xs text-muted-foreground">—</span>
                                     )}
