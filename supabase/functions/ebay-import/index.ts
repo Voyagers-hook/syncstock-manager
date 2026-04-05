@@ -72,9 +72,8 @@ Deno.serve(async (req) => {
       return json({ success: true, mode: "full_reset", ...stats });
 
     } else {
-      // ── QUICK SYNC: Update prices only on existing listings ───────────────
-      // Never creates new products. Only updates channel_price on known eBay listings.
-      const stats = await quickSyncPrices(supabase, items);
+      // ── QUICK SYNC: Update prices on existing + import any new listings ───
+      const stats = await quickSyncWithNewListings(supabase, items);
 
       await supabase.from("sync_log").insert({
         sync_type: "ebay_import",
@@ -294,27 +293,68 @@ async function fullInsert(supabase: any, items: EbayItem[]) {
   };
 }
 
-// ─── Quick Sync: price update only on existing listings ──────────────────────
+// ─── Quick Sync: update prices + import any brand-new listings ────────────────
+// Safe: never touches or duplicates existing merged products.
+// New variations on existing eBay items → added under same product.
+// Completely new eBay items → product name matched first, then created if no match.
 
-async function quickSyncPrices(supabase: any, items: EbayItem[]) {
+async function quickSyncWithNewListings(supabase: any, items: EbayItem[]) {
   const now = new Date().toISOString();
   let updated = 0;
-  let skipped = 0;
+  let created = 0;
 
-  // Load all existing eBay channel_listings into a lookup map
+  // 1. Load all existing eBay channel_listings with their variant_ids
   const { data: existingListings } = await supabase
     .from("channel_listings")
-    .select("id, channel_product_id, channel_variant_id")
+    .select("id, channel_product_id, channel_variant_id, variant_id")
     .eq("channel", "ebay");
 
-  // Map: "channel_product_id::channel_variant_id" → listing id
+  // Map: "cpid::cvid" → listing id (for price updates)
   const listingMap = new Map<string, string>();
-  for (const l of (existingListings ?? []) as any[]) {
-    listingMap.set(`${l.channel_product_id}::${l.channel_variant_id}`, l.id);
+  // Map: cpid → product_id (so new variations go under the same product)
+  const cpidToProductId = new Map<string, string>();
+
+  const existingVariantIds = [...new Set(((existingListings ?? []) as any[]).map((l: any) => l.variant_id))];
+
+  if (existingVariantIds.length > 0) {
+    const { data: variantRows } = await supabase
+      .from("variants")
+      .select("id, product_id")
+      .in("id", existingVariantIds);
+
+    const variantToProduct = new Map<string, string>();
+    for (const v of (variantRows ?? []) as any[]) variantToProduct.set(v.id, v.product_id);
+
+    for (const l of (existingListings ?? []) as any[]) {
+      listingMap.set(`${l.channel_product_id}::${l.channel_variant_id}`, l.id);
+      const pid = variantToProduct.get(l.variant_id);
+      if (pid) cpidToProductId.set(l.channel_product_id, pid);
+    }
   }
 
-  // For each eBay item, update price on matching listing only
+  // 2. Load all existing products for name-based dedup
+  const { data: allProducts } = await supabase.from("products").select("id, name");
+  const productByName = new Map<string, string>();
+  for (const p of (allProducts ?? []) as any[]) {
+    productByName.set(p.name.toLowerCase().trim(), p.id);
+  }
+
+  // 3. Process each eBay item
   const updateBatch: { id: string; channel_price: number; last_synced_at: string }[] = [];
+  // Collect new items to process
+  type NewEntry = {
+    productId: string | null;
+    productName: string;
+    productSku: string;
+    internalSku: string;
+    option1: string | null;
+    cpid: string;
+    cvid: string;
+    channelSku: string;
+    price: number;
+    stock: number;
+  };
+  const newEntries: NewEntry[] = [];
 
   for (const item of items) {
     const cpid = `v1|${item.itemId}|0`;
@@ -323,38 +363,133 @@ async function quickSyncPrices(supabase: any, items: EbayItem[]) {
       for (const v of item.variations) {
         const cvid = v.name || v.sku || `${item.itemId}-${v.name}`;
         const key = `${cpid}::${cvid}`;
-        const listingId = listingMap.get(key);
-        if (listingId) {
-          updateBatch.push({ id: listingId, channel_price: parseFloat(v.price), last_synced_at: now });
+        const existingId = listingMap.get(key);
+
+        if (existingId) {
+          updateBatch.push({ id: existingId, channel_price: parseFloat(v.price), last_synced_at: now });
         } else {
-          skipped++;
+          // New variation — find product via same eBay item ID, then name, then create
+          const productId = cpidToProductId.get(cpid) ?? productByName.get(item.title.toLowerCase().trim()) ?? null;
+          const iSku = v.sku || `${item.itemId}-${v.name}`;
+          newEntries.push({
+            productId,
+            productName: item.title,
+            productSku: item.sku,
+            internalSku: iSku,
+            option1: v.name || null,
+            cpid,
+            cvid,
+            channelSku: v.sku || v.name,
+            price: parseFloat(v.price),
+            stock: Math.max(0, v.qty - v.sold),
+          });
         }
       }
     } else {
       const key = `${cpid}::`;
-      const listingId = listingMap.get(key);
-      if (listingId) {
-        updateBatch.push({ id: listingId, channel_price: parseFloat(item.price), last_synced_at: now });
+      const existingId = listingMap.get(key);
+
+      if (existingId) {
+        updateBatch.push({ id: existingId, channel_price: parseFloat(item.price), last_synced_at: now });
       } else {
-        skipped++;
+        const productId = cpidToProductId.get(cpid) ?? productByName.get(item.title.toLowerCase().trim()) ?? null;
+        newEntries.push({
+          productId,
+          productName: item.title,
+          productSku: item.sku,
+          internalSku: item.itemId,
+          option1: null,
+          cpid,
+          cvid: "",
+          channelSku: item.sku,
+          price: parseFloat(item.price),
+          stock: Math.max(0, item.qty - item.sold),
+        });
       }
     }
   }
 
-  // Update in chunks
-  const CHUNK = 50;
-  for (let i = 0; i < updateBatch.length; i += CHUNK) {
-    const chunk = updateBatch.slice(i, i + CHUNK);
-    for (const row of chunk) {
-      await supabase.from("channel_listings")
-        .update({ channel_price: row.channel_price, last_synced_at: row.last_synced_at })
-        .eq("id", row.id);
+  // 4. Apply price updates
+  for (const row of updateBatch) {
+    await supabase.from("channel_listings")
+      .update({ channel_price: row.channel_price, last_synced_at: row.last_synced_at })
+      .eq("id", row.id);
+    updated++;
+  }
+
+  // 5. Create products for entries that still have no productId
+  const needProduct = newEntries.filter(e => !e.productId);
+  const uniqueNewProducts = [...new Map(needProduct.map(e => [e.productName, e])).values()];
+
+  for (const e of uniqueNewProducts) {
+    const { data: inserted } = await supabase.from("products")
+      .insert({ name: e.productName, sku: e.productSku, active: true })
+      .select("id, name")
+      .single();
+    if (inserted) {
+      productByName.set(e.productName.toLowerCase().trim(), inserted.id);
+      // Assign to all matching entries
+      for (const entry of newEntries) {
+        if (!entry.productId && entry.productName === e.productName) {
+          entry.productId = inserted.id;
+        }
+      }
     }
-    updated += chunk.length;
+  }
+
+  // 6. Create variants, inventory, channel_listings for each new entry
+  for (const e of newEntries) {
+    if (!e.productId) continue;
+
+    // Check if variant already exists (avoid duplicate if somehow present)
+    const { data: existingVar } = await supabase.from("variants")
+      .select("id")
+      .eq("product_id", e.productId)
+      .eq("internal_sku", e.internalSku)
+      .maybeSingle();
+
+    let variantId: string | null = existingVar?.id ?? null;
+
+    if (!variantId) {
+      const { data: newVar } = await supabase.from("variants")
+        .insert({ product_id: e.productId, internal_sku: e.internalSku, option1: e.option1 })
+        .select("id")
+        .single();
+      variantId = newVar?.id ?? null;
+    }
+
+    if (!variantId) continue;
+
+    // Upsert inventory (don't overwrite existing stock if variant already had inventory)
+    const { data: existingInv } = await supabase.from("inventory")
+      .select("id")
+      .eq("variant_id", variantId)
+      .maybeSingle();
+
+    if (!existingInv) {
+      await supabase.from("inventory").insert({
+        variant_id: variantId,
+        product_id: e.productId,
+        total_stock: e.stock,
+      });
+    }
+
+    // Insert channel_listing (skip if somehow already there due to race)
+    await supabase.from("channel_listings").upsert({
+      variant_id: variantId,
+      channel: "ebay",
+      channel_sku: e.channelSku,
+      channel_price: e.price,
+      channel_product_id: e.cpid,
+      channel_variant_id: e.cvid,
+      last_synced_at: now,
+    }, { onConflict: "channel,channel_variant_id" });
+
+    created++;
   }
 
   return {
     listings_updated: updated,
-    listings_skipped_not_in_db: skipped,
+    new_listings_created: created,
   };
 }
