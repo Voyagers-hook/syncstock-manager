@@ -14,6 +14,7 @@ const BodySchema = z.object({
   stock: z.number().int().min(0).optional(),
   price: z.number().min(0).optional(),
   channel: z.string().optional(),
+  priceType: z.enum(["base", "sale"]).optional().default("base"),
 });
 
 Deno.serve(async (req) => {
@@ -28,19 +29,17 @@ Deno.serve(async (req) => {
     });
   }
 
-  const { variantId, stock, price, channel } = parsed.data;
+  const { variantId, stock, price, channel, priceType } = parsed.data;
 
   const supabase = createClient(
     Deno.env.get("SUPABASE_URL")!,
     Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
   );
 
-  // Read Squarespace API key from DB (env var fallback)
   const { data: sqKeyRow } = await supabase
     .from("sync_secrets").select("value").eq("key", "squarespace_api_key").maybeSingle();
   const sqApiKey = sqKeyRow?.value ?? Deno.env.get("SQUARESPACE_API_KEY") ?? Deno.env.get("SQUARESPACE_API");
 
-  // Get all channel_listings for this variant
   const { data: listings, error: listErr } = await supabase
     .from("channel_listings")
     .select("*")
@@ -59,7 +58,6 @@ Deno.serve(async (req) => {
     });
   }
 
-  // Only update the listings for the requested channel
   const targetListings = channel ? listings.filter((l: any) => l.channel === channel) : listings;
 
   const results: { channel: string; status: string; message?: string }[] = [];
@@ -71,11 +69,12 @@ Deno.serve(async (req) => {
         if (!ebayToken) {
           ebayToken = await getEbayAccessToken(supabase);
         }
+        // eBay has no base/sale distinction — StartPrice is always the actual price
         const ebayResult = await pushEbayUpdate(listing, stock, price, ebayToken!);
         results.push({ channel: "ebay", status: "success", message: ebayResult });
       } else if (listing.channel === "squarespace") {
         if (!sqApiKey) throw new Error("Squarespace API key not found in sync_secrets or env");
-        await pushSquarespaceUpdate(listing, stock, price, sqApiKey);
+        await pushSquarespaceUpdate(listing, stock, price, sqApiKey, priceType);
         results.push({ channel: "squarespace", status: "success" });
       }
     } catch (err: any) {
@@ -93,7 +92,7 @@ Deno.serve(async (req) => {
   );
 });
 
-// ── eBay: ReviseInventoryStatus (SKU-based) or ReviseItem (VariationSpecifics) ──
+// ── eBay ─────────────────────────────────────────────────────────────────────
 async function pushEbayUpdate(
   listing: any,
   stock: number | undefined,
@@ -106,19 +105,14 @@ async function pushEbayUpdate(
 
   if (!stock && stock !== 0 && !price) return "nothing to update";
 
-  // Detect variation listing: channel_variant_id is not empty and not just digits
   const isVariation = listing.channel_variant_id &&
     listing.channel_variant_id !== "" &&
     !/^\d+$/.test(listing.channel_variant_id);
 
   if (isVariation) {
-    // Try SKU-based first (ReviseInventoryStatus) — works if channel_sku is set
     if (listing.channel_sku) {
       return await reviseInventoryStatus(itemId, listing.channel_sku, stock, price, token);
     }
-
-    // No SKU — parse VariationSpecifics from channel_variant_id
-    // Format: "ItemID_Name1:Value1_Name2:Value2" or "ItemID_Name:Value"
     const specificsStr = listing.channel_variant_id.replace(/^\d+_/, "");
     const nameValuePairs = specificsStr.split("_").map((pair: string) => {
       const colonIdx = pair.indexOf(":");
@@ -129,15 +123,12 @@ async function pushEbayUpdate(
     if (nameValuePairs.length === 0) {
       throw new Error(`Cannot identify eBay variation — no SKU set and could not parse channel_variant_id: ${listing.channel_variant_id}`);
     }
-
     return await reviseItemVariation(itemId, nameValuePairs, stock, price, token);
   }
 
-  // Simple (non-variation) listing — use ReviseInventoryStatus without SKU
   return await reviseInventoryStatus(itemId, null, stock, price, token);
 }
 
-// ReviseInventoryStatus — works for simple listings or variation listings with a known SKU
 async function reviseInventoryStatus(
   itemId: string,
   sku: string | null,
@@ -182,7 +173,6 @@ async function reviseInventoryStatus(
   return "ok";
 }
 
-// ReviseItem with VariationSpecifics — used when no SKU is available but we know Name/Value pairs
 async function reviseItemVariation(
   itemId: string,
   nameValuePairs: { name: string; value: string }[],
@@ -238,17 +228,18 @@ async function reviseItemVariation(
   return "ok (via VariationSpecifics)";
 }
 
-// ── Squarespace: stock via inventory adjustments, price via variant endpoint ──
+// ── Squarespace ───────────────────────────────────────────────────────────────
 async function pushSquarespaceUpdate(
   listing: any,
   stock: number | undefined,
   price: number | undefined,
-  apiKey: string
+  apiKey: string,
+  priceType: "base" | "sale" = "base"
 ): Promise<void> {
   const variantId = listing.channel_variant_id;
   if (!variantId) throw new Error("Missing Squarespace variant ID");
 
-  // Stock update — inventory adjustments endpoint (unchanged)
+  // Stock update
   if (stock !== undefined) {
     const resp = await fetch(`${SQ_API_BASE}/commerce/inventory/adjustments`, {
       method: "POST",
@@ -268,11 +259,36 @@ async function pushSquarespaceUpdate(
     }
   }
 
-  // Price update — always use the variant endpoint directly, never product-level
+  // Price update
   if (price !== undefined) {
     const productId = listing.channel_product_id;
     if (!productId) throw new Error("Missing Squarespace product ID for price update");
-    if (!variantId) throw new Error("Missing Squarespace variant ID for price update");
+
+    // Build the pricing body depending on base vs sale
+    let pricingBody: object;
+    if (priceType === "sale") {
+      // Set sale price and enable on-sale flag
+      pricingBody = {
+        pricing: {
+          salePrice: {
+            value: price.toFixed(2),
+            currency: "GBP",
+          },
+          onSale: true,
+        },
+      };
+    } else {
+      // Set base price and clear any active sale
+      pricingBody = {
+        pricing: {
+          basePrice: {
+            value: price.toFixed(2),
+            currency: "GBP",
+          },
+          onSale: false,
+        },
+      };
+    }
 
     const resp = await fetch(
       `${SQ_API_BASE}/commerce/products/${productId}/variants/${variantId}`,
@@ -283,14 +299,7 @@ async function pushSquarespaceUpdate(
           "Content-Type": "application/json",
           "User-Agent": "SyncStock/1.0",
         },
-        body: JSON.stringify({
-          pricing: {
-            basePrice: {
-              value: price.toFixed(2),
-              currency: "GBP",
-            },
-          },
-        }),
+        body: JSON.stringify(pricingBody),
       }
     );
 
@@ -301,7 +310,7 @@ async function pushSquarespaceUpdate(
   }
 }
 
-// ── eBay OAuth: exchange refresh_token for access_token ──────────────────────
+// ── eBay OAuth ────────────────────────────────────────────────────────────────
 async function getEbayAccessToken(supabase: any): Promise<string> {
   const { data, error } = await supabase
     .from("sync_secrets")
