@@ -374,6 +374,7 @@ async function upsertProducts(supabase: any, squarespaceProducts: SqProduct[]) {
         channel: "squarespace",
         channel_sku: variantSku,
         channel_price: price,
+        sq_base_price: price,
         channel_product_id: sqProduct.id,
         channel_variant_id: sqVariant.id,
         last_synced_at: new Date().toISOString(),
