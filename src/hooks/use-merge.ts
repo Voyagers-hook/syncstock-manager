@@ -22,6 +22,13 @@ export type UnmergedVariant = {
   channel: string;
 };
 
+export type ConsolidatableProduct = {
+  id: string;
+  name: string;
+  sku: string | null;
+  variants: { id: string; name: string }[];
+};
+
 // ─── Product-level hooks ──────────────────────────────────────────────────────
 export function useUnmergedProducts() {
   return useQuery({
@@ -251,9 +258,6 @@ export function useUnmergedVariants() {
   return useQuery({
     queryKey: ["unmerged-variants"],
     queryFn: async () => {
-      // Use a server-side RPC instead of fetching all listings client-side.
-      // The RPC does the unlinked filtering in Postgres — accurate, fast,
-      // and avoids the client-side mapping issues that caused wrong results.
       const { data, error } = await supabase.rpc("get_unmerged_variants");
       if (error) throw error;
       return (data ?? []) as UnmergedVariant[];
@@ -312,6 +316,103 @@ export function useMergeVariants() {
   });
 }
 
+// ─── Consolidate Products ─────────────────────────────────────────────────────
+// Fetches all active products with their variants for the Consolidate tab
+export function useAllProductsForConsolidate() {
+  return useQuery({
+    queryKey: ["all-products-consolidate"],
+    queryFn: async () => {
+      const { data: products, error } = await supabase
+        .from("products")
+        .select("id, name, sku, variants(id, option1, option2)")
+        .eq("active", true)
+        .order("name");
+      if (error) throw error;
+      return (products ?? []).map((p: any) => ({
+        id: p.id,
+        name: p.name,
+        sku: p.sku ?? null,
+        variants: (p.variants ?? []).map((v: any) => ({
+          id: v.id,
+          name: [v.option1, v.option2].filter(Boolean).join(" / ") || "Default",
+        })),
+      })) as ConsolidatableProduct[];
+    },
+  });
+}
+
+// Takes N products and collapses them into 1 parent product with N variants.
+// Each product's channel listings stay attached to its variant — we just
+// re-parent the variant rows under the kept product and rename them.
+export function useConsolidateProducts() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      keepProductId,
+      parentName,
+      selections,
+    }: {
+      keepProductId: string;
+      parentName: string;
+      // One entry per selected product/variant — includes the keep product itself
+      selections: { productId: string; variantId: string; variantName: string }[];
+    }) => {
+      // 1. Rename the parent product
+      const { error: renameErr } = await supabase
+        .from("products")
+        .update({ name: parentName })
+        .eq("id", keepProductId);
+      if (renameErr) throw renameErr;
+
+      // 2. Process each selection
+      for (const sel of selections) {
+        // Rename + reparent the variant under the keep product
+        const { error: varErr } = await supabase
+          .from("variants")
+          .update({
+            option1: sel.variantName,
+            option2: null,
+            product_id: keepProductId,
+          })
+          .eq("id", sel.variantId);
+        if (varErr) throw varErr;
+
+        // Update inventory product_id so stock totals roll up to the right product
+        await supabase
+          .from("inventory")
+          .update({ product_id: keepProductId })
+          .eq("variant_id", sel.variantId);
+
+        // If this was a different product, retire it if it's now empty
+        if (sel.productId !== keepProductId) {
+          const { data: remaining } = await supabase
+            .from("variants")
+            .select("id")
+            .eq("product_id", sel.productId);
+          if (!remaining?.length) {
+            await supabase
+              .from("products")
+              .update({ active: false })
+              .eq("id", sel.productId);
+          }
+        }
+      }
+
+      return { keepProductId };
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["products"] });
+      queryClient.invalidateQueries({ queryKey: ["unmerged-products"] });
+      queryClient.invalidateQueries({ queryKey: ["unmerged-variants"] });
+      queryClient.invalidateQueries({ queryKey: ["all-products-consolidate"] });
+      toast.success("Products consolidated — all variants now live under one parent!");
+    },
+    onError: (err: any) => {
+      toast.error(`Consolidation failed: ${err.message}`);
+    },
+  });
+}
+
 // ─── Shared helpers ───────────────────────────────────────────────────────────
 async function consolidateInventory(keepId: string, removeId: string) {
   const { data: keepInv } = await supabase
@@ -359,4 +460,3 @@ async function consolidateInventory(keepId: string, removeId: string) {
 export function useMergeHistory() {
   return { history: [], refresh: () => {} };
 }
-
