@@ -9,12 +9,16 @@ const corsHeaders = {
 const EBAY_API_BASE = "https://api.ebay.com";
 const SQ_API_BASE = "https://api.squarespace.com/1.0";
 
+// Accept optional sq_base_price, sq_sale_price, sq_on_sale for Squarespace
 const BodySchema = z.object({
   variantId: z.string().uuid(),
   stock: z.number().int().min(0).optional(),
   price: z.number().min(0).optional(),
   channel: z.string().optional(),
   priceType: z.enum(["base", "sale"]).optional().default("base"),
+  sq_on_sale: z.boolean().optional(),
+  sq_base_price: z.number().min(0).optional(),
+  sq_sale_price: z.number().min(0).optional(),
 });
 
 Deno.serve(async (req) => {
@@ -29,7 +33,7 @@ Deno.serve(async (req) => {
     });
   }
 
-  const { variantId, stock, price, channel, priceType } = parsed.data;
+  const { variantId, stock, price, channel, priceType, sq_on_sale, sq_base_price, sq_sale_price } = parsed.data;
 
   const supabase = createClient(
     Deno.env.get("SUPABASE_URL")!,
@@ -74,7 +78,13 @@ Deno.serve(async (req) => {
         results.push({ channel: "ebay", status: "success", message: ebayResult });
       } else if (listing.channel === "squarespace") {
         if (!sqApiKey) throw new Error("Squarespace API key not found in sync_secrets or env");
-        await pushSquarespaceUpdate(listing, stock, price, sqApiKey, priceType);
+        await pushSquarespaceUpdate(
+          { ...listing, sq_on_sale, sq_base_price, sq_sale_price, }, // supply new fields
+          stock,
+          price,
+          sqApiKey,
+          priceType
+        );
         results.push({ channel: "squarespace", status: "success" });
       }
     } catch (err: any) {
@@ -228,18 +238,18 @@ async function reviseItemVariation(
   return "ok (via VariationSpecifics)";
 }
 
-// ── Squarespace ───────────────────────────────────────────────────────────────
+// ── Squarespace update, supports sq_base_price, sq_sale_price, sq_on_sale ────
 async function pushSquarespaceUpdate(
   listing: any,
   stock: number | undefined,
-  price: number | undefined,
+  _price: number | undefined,
   apiKey: string,
-  priceType: "base" | "sale" = "base"
+  _priceType: "base" | "sale" = "base"
 ): Promise<void> {
   const variantId = listing.channel_variant_id;
   if (!variantId) throw new Error("Missing Squarespace variant ID");
 
-  // Stock update
+  // Stock update (unchanged)
   if (stock !== undefined) {
     const resp = await fetch(`${SQ_API_BASE}/commerce/inventory/adjustments`, {
       method: "POST",
@@ -259,54 +269,58 @@ async function pushSquarespaceUpdate(
     }
   }
 
-  // Price update
-  if (price !== undefined) {
-    const productId = listing.channel_product_id;
-    if (!productId) throw new Error("Missing Squarespace product ID for price update");
+  // Price update (now with base vs. sale logic)
+  const productId = listing.channel_product_id;
+  if (!productId) throw new Error("Missing Squarespace product ID for price update");
+  // If neither base nor sale price is supplied, do nothing
+  if (listing.sq_base_price === undefined && listing.sq_sale_price === undefined) return;
 
-    // Build the pricing body depending on base vs sale
-    let pricingBody: object;
-    if (priceType === "sale") {
-      // Set sale price and enable on-sale flag
-      pricingBody = {
-        pricing: {
-          salePrice: {
-            value: price.toFixed(2),
-            currency: "GBP",
-          },
-          onSale: true,
+  const saleActive = listing.sq_on_sale ?? false;
+  const livePrice = saleActive
+    ? (listing.sq_sale_price ?? listing.channel_price)
+    : (listing.sq_base_price ?? listing.channel_price);
+
+  let pricingBody: object;
+  if (saleActive && livePrice !== undefined) {
+    pricingBody = {
+      pricing: {
+        salePrice: {
+          value: Number(livePrice).toFixed(2),
+          currency: "GBP",
         },
-      };
-    } else {
-      // Set base price and clear any active sale
-      pricingBody = {
-        pricing: {
-          basePrice: {
-            value: price.toFixed(2),
-            currency: "GBP",
-          },
-          onSale: false,
+        onSale: true,
+      },
+    };
+  } else if (livePrice !== undefined) {
+    pricingBody = {
+      pricing: {
+        basePrice: {
+          value: Number(livePrice).toFixed(2),
+          currency: "GBP",
         },
-      };
+        onSale: false,
+      },
+    };
+  } else {
+    return; // no price or update to send
+  }
+
+  const resp = await fetch(
+    `${SQ_API_BASE}/commerce/products/${productId}/variants/${variantId}`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+        "User-Agent": "SyncStock/1.0",
+      },
+      body: JSON.stringify(pricingBody),
     }
+  );
 
-    const resp = await fetch(
-      `${SQ_API_BASE}/commerce/products/${productId}/variants/${variantId}`,
-      {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${apiKey}`,
-          "Content-Type": "application/json",
-          "User-Agent": "SyncStock/1.0",
-        },
-        body: JSON.stringify(pricingBody),
-      }
-    );
-
-    if (!resp.ok) {
-      const body = await resp.text();
-      throw new Error(`Squarespace price update failed [${resp.status}]: ${body.slice(0, 300)}`);
-    }
+  if (!resp.ok) {
+    const body = await resp.text();
+    throw new Error(`Squarespace price update failed [${resp.status}]: ${body.slice(0, 300)}`);
   }
 }
 
