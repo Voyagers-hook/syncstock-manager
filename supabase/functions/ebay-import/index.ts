@@ -82,7 +82,7 @@ Deno.serve(async (req) => {
     }
 
     // ── Bulk insert in 3 passes ───────────────────────────────────────────────
-    const stats = await bulkInsert(supabase, items);
+    const stats = await bulkInsert(supabase, items, clearFirst);
 
     try {
       await supabase.from("sync_log").insert({
@@ -208,7 +208,7 @@ function parseXml(xml: string): EbayItem[] {
 
 // ─── Bulk insert (3 round-trips, no upsert = no constraint dependency) ────────
 
-async function bulkInsert(supabase: any, items: EbayItem[]) {
+async function bulkInsert(supabase: any, items: EbayItem[], clearFirst = false) {
   const now = new Date().toISOString();
 
   // ── Pass 1: insert products ───────────────────────────────────────────────
@@ -336,10 +336,12 @@ async function bulkInsert(supabase: any, items: EbayItem[]) {
     const { data: existing } = await supabase.from("inventory").select("variant_id").in("variant_id", chunk);
     for (const inv of (existing ?? []) as any[]) existingInvSet.add(inv.variant_id);
   }
-  // Update existing
-  for (const row of invRows) {
-    if (existingInvSet.has(row.variant_id)) {
-      await supabase.from("inventory").update({ total_stock: row.total_stock }).eq("variant_id", row.variant_id);
+  // Update existing stock — ONLY on Full Reset; Quick Sync preserves current stock
+  if (clearFirst) {
+    for (const row of invRows) {
+      if (existingInvSet.has(row.variant_id)) {
+        await supabase.from("inventory").update({ total_stock: row.total_stock }).eq("variant_id", row.variant_id);
+      }
     }
   }
   // Insert new
@@ -347,8 +349,12 @@ async function bulkInsert(supabase: any, items: EbayItem[]) {
   for (let i = 0; i < newInvRows.length; i += CHUNK) {
     await supabase.from("inventory").insert(newInvRows.slice(i, i + CHUNK));
   }
+  // Upsert channel_listings — updates price/sync time on existing rows, inserts new ones
   for (let i = 0; i < listRows.length; i += CHUNK) {
-    await supabase.from("channel_listings").insert(listRows.slice(i, i + CHUNK));
+    await supabase.from("channel_listings").upsert(listRows.slice(i, i + CHUNK), {
+      onConflict: "channel,channel_variant_id",
+      ignoreDuplicates: false,
+    });
   }
 
   return {
