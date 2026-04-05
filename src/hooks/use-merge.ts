@@ -342,8 +342,9 @@ export function useAllProductsForConsolidate() {
 }
 
 // Takes N products and collapses them into 1 parent product with N variants.
-// Each product's channel listings stay attached to its variant — we just
-// re-parent the variant rows under the kept product and rename them.
+// Moves ALL variants from each source product — not just variants[0].
+// If a source variant already has a name, it keeps it.
+// If a source variant is unnamed (null/Default), it gets the user-supplied variantName.
 export function useConsolidateProducts() {
   const queryClient = useQueryClient();
   return useMutation({
@@ -354,7 +355,6 @@ export function useConsolidateProducts() {
     }: {
       keepProductId: string;
       parentName: string;
-      // One entry per selected product/variant — includes the keep product itself
       selections: { productId: string; variantId: string; variantName: string }[];
     }) => {
       // 1. Rename the parent product
@@ -364,37 +364,43 @@ export function useConsolidateProducts() {
         .eq("id", keepProductId);
       if (renameErr) throw renameErr;
 
-      // 2. Process each selection
+      // 2. Process each selected product — move ALL its variants
       for (const sel of selections) {
-        // Rename + reparent the variant under the keep product
-        const { error: varErr } = await supabase
+        // Fetch every variant belonging to this product
+        const { data: allVariants, error: fetchErr } = await supabase
           .from("variants")
-          .update({
-            option1: sel.variantName,
-            option2: null,
-            product_id: keepProductId,
-          })
-          .eq("id", sel.variantId);
-        if (varErr) throw varErr;
+          .select("id, option1, option2")
+          .eq("product_id", sel.productId);
+        if (fetchErr) throw fetchErr;
 
-        // Update inventory product_id so stock totals roll up to the right product
-        await supabase
-          .from("inventory")
-          .update({ product_id: keepProductId })
-          .eq("variant_id", sel.variantId);
+        for (const v of allVariants ?? []) {
+          const isUnnamed = !v.option1 || v.option1 === "Default";
+          // Keep existing name for already-named variants; use user input for unnamed ones
+          const newName = isUnnamed ? sel.variantName : v.option1;
 
-        // If this was a different product, retire it if it's now empty
-        if (sel.productId !== keepProductId) {
-          const { data: remaining } = await supabase
+          const { error: varErr } = await supabase
             .from("variants")
-            .select("id")
-            .eq("product_id", sel.productId);
-          if (!remaining?.length) {
-            await supabase
-              .from("products")
-              .update({ active: false })
-              .eq("id", sel.productId);
-          }
+            .update({
+              option1: newName,
+              option2: isUnnamed ? null : v.option2,
+              product_id: keepProductId,
+            })
+            .eq("id", v.id);
+          if (varErr) throw varErr;
+
+          // Update inventory so stock rolls up to the right product
+          await supabase
+            .from("inventory")
+            .update({ product_id: keepProductId })
+            .eq("variant_id", v.id);
+        }
+
+        // Retire the now-empty source product (skip the parent itself)
+        if (sel.productId !== keepProductId) {
+          await supabase
+            .from("products")
+            .update({ active: false })
+            .eq("id", sel.productId);
         }
       }
 
@@ -460,3 +466,4 @@ async function consolidateInventory(keepId: string, removeId: string) {
 export function useMergeHistory() {
   return { history: [], refresh: () => {} };
 }
+
