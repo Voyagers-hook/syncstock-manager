@@ -96,35 +96,59 @@ export function useMergeProducts() {
       keepId: string;
       removeId: string;
     }) => {
+      // Get existing variants on the KEPT product - reuse them, never blindly create new ones
+      const { data: keepVariants } = await supabase
+        .from("variants")
+        .select("*")
+        .eq("product_id", keepId);
+      if (!keepVariants?.length) throw new Error("Kept product has no variants");
+
       const { data: removeVariants } = await supabase
         .from("variants")
         .select("*")
         .eq("product_id", removeId);
       if (!removeVariants) throw new Error("Missing removed variants");
 
+      const usedKeepVariantIds = new Set<string>();
       let newVariantIds: string[] = [];
-      for (const rv of removeVariants) {
-        const {
-          data: [newVariant],
-          error: createErr,
-        } = await supabase
-          .from("variants")
-          .insert({
-            product_id: keepId,
-            option1: rv.option1,
-            option2: rv.option2,
-          })
-          .select();
-        if (createErr || !newVariant)
-          throw new Error("Failed to create new variant on kept product");
-        newVariantIds.push(newVariant.id);
 
+      for (const rv of removeVariants) {
+        // Try exact name match first
+        let targetVariant: any = keepVariants.find(
+          (kv: any) =>
+            !usedKeepVariantIds.has(kv.id) &&
+            kv.option1 === rv.option1 &&
+            kv.option2 === rv.option2
+        );
+
+        // Single-variant product merged with single-variant product: use the existing variant
+        if (!targetVariant && keepVariants.length === 1) {
+          targetVariant = keepVariants[0];
+        }
+
+        // Only create a new variant for genuinely unmatched multi-variant cases
+        if (!targetVariant) {
+          const { data: created, error: createErr } = await supabase
+            .from("variants")
+            .insert({ product_id: keepId, option1: rv.option1, option2: rv.option2 })
+            .select()
+            .single();
+          if (createErr || !created)
+            throw new Error("Failed to create new variant on kept product");
+          targetVariant = created;
+          (keepVariants as any[]).push(created);
+        }
+
+        usedKeepVariantIds.add(targetVariant.id);
+        newVariantIds.push(targetVariant.id);
+
+        // Move all channel listings from removed variant onto target variant
         await supabase
           .from("channel_listings")
-          .update({ variant_id: newVariant.id })
+          .update({ variant_id: targetVariant.id })
           .eq("variant_id", rv.id);
 
-        await consolidateInventory(newVariant.id, rv.id);
+        await consolidateInventory(targetVariant.id, rv.id);
         await supabase.from("variants").delete().eq("id", rv.id);
       }
 
@@ -335,3 +359,4 @@ async function consolidateInventory(keepId: string, removeId: string) {
 export function useMergeHistory() {
   return { history: [], refresh: () => {} };
 }
+
