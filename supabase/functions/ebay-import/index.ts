@@ -62,27 +62,33 @@ Deno.serve(async (req) => {
       // Fresh import with actual current stock from eBay
       const stats = await fullInsert(supabase, items);
 
+      // Ensure every variant has an inventory row
+      const invFixed = await ensureInventoryRows(supabase);
+
       await supabase.from("sync_log").insert({
         sync_type: "ebay_import",
         status: "completed",
-        details: JSON.stringify({ mode: "full_reset", ...stats }),
+        details: JSON.stringify({ mode: "full_reset", ...stats, inventory_gaps_fixed: invFixed }),
         source: "edge_function",
       });
 
-      return json({ success: true, mode: "full_reset", ...stats });
+      return json({ success: true, mode: "full_reset", ...stats, inventory_gaps_fixed: invFixed });
 
     } else {
       // ── QUICK SYNC: Update prices on existing + import any new listings ───
       const stats = await quickSyncWithNewListings(supabase, items);
 
+      // Ensure every variant has an inventory row
+      const invFixed = await ensureInventoryRows(supabase);
+
       await supabase.from("sync_log").insert({
         sync_type: "ebay_import",
         status: "completed",
-        details: JSON.stringify({ mode: "quick_sync", ...stats }),
+        details: JSON.stringify({ mode: "quick_sync", ...stats, inventory_gaps_fixed: invFixed }),
         source: "edge_function",
       });
 
-      return json({ success: true, mode: "quick_sync", ...stats });
+      return json({ success: true, mode: "quick_sync", ...stats, inventory_gaps_fixed: invFixed });
     }
 
   } catch (err: unknown) {
@@ -492,4 +498,43 @@ async function quickSyncWithNewListings(supabase: any, items: EbayItem[]) {
     listings_updated: updated,
     new_listings_created: created,
   };
+}
+
+// ─── Ensure every variant has at least one inventory row ─────────────────────
+// Runs after import to fill any gaps (stock defaults to 0 for missing rows).
+
+async function ensureInventoryRows(supabase: any): Promise<number> {
+  const CHUNK = 500;
+  let fixed = 0;
+
+  // Fetch all variants
+  const { data: allVariants } = await supabase
+    .from("variants")
+    .select("id, product_id");
+
+  if (!allVariants?.length) return 0;
+
+  // Fetch all existing inventory variant_ids
+  const { data: allInv } = await supabase
+    .from("inventory")
+    .select("variant_id");
+
+  const existingVariantIds = new Set<string>((allInv ?? []).map((i: any) => i.variant_id));
+
+  // Find variants with no inventory row
+  const missing = (allVariants as any[]).filter((v: any) => !existingVariantIds.has(v.id));
+  if (missing.length === 0) return 0;
+
+  // Insert inventory rows in chunks
+  for (let i = 0; i < missing.length; i += CHUNK) {
+    const chunk = missing.slice(i, i + CHUNK).map((v: any) => ({
+      variant_id: v.id,
+      product_id: v.product_id,
+      total_stock: 0,
+    }));
+    const { error } = await supabase.from("inventory").insert(chunk);
+    if (!error) fixed += chunk.length;
+  }
+
+  return fixed;
 }
