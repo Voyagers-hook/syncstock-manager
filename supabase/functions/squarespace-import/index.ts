@@ -32,14 +32,17 @@ Deno.serve(async (req) => {
     const products = await fetchAllSquarespaceProducts(sqApiKey);
     const stats = await upsertProducts(supabase, products);
 
+    // Ensure every variant has an inventory row after import
+    const invFixed = await ensureInventoryRows(supabase);
+
     await supabase.from("sync_log").insert({
       sync_type: "squarespace_import",
       status: "completed",
-      details: JSON.stringify(stats),
+      details: JSON.stringify({ ...stats, inventory_gaps_fixed: invFixed }),
       source: "edge_function",
     });
 
-    return new Response(JSON.stringify({ success: true, ...stats }), {
+    return new Response(JSON.stringify({ success: true, ...stats, inventory_gaps_fixed: invFixed }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (error) {
@@ -424,4 +427,42 @@ async function upsertProducts(supabase: any, squarespaceProducts: SqProduct[]) {
     listings_updated: listingsUpdated,
   };
 }
-// force-redeploy-1775234014
+
+// ─── Ensure every variant has at least one inventory row ─────────────────────
+// Runs after import to fill any gaps (stock defaults to 0 for missing rows).
+
+async function ensureInventoryRows(supabase: any): Promise<number> {
+  const CHUNK = 500;
+  let fixed = 0;
+
+  // Fetch all variants
+  const { data: allVariants } = await supabase
+    .from("variants")
+    .select("id, product_id");
+
+  if (!allVariants?.length) return 0;
+
+  // Fetch all existing inventory variant_ids
+  const { data: allInv } = await supabase
+    .from("inventory")
+    .select("variant_id");
+
+  const existingVariantIds = new Set<string>((allInv ?? []).map((i: any) => i.variant_id));
+
+  // Find variants with no inventory row
+  const missing = (allVariants as any[]).filter((v: any) => !existingVariantIds.has(v.id));
+  if (missing.length === 0) return 0;
+
+  // Insert inventory rows in chunks
+  for (let i = 0; i < missing.length; i += CHUNK) {
+    const chunk = missing.slice(i, i + CHUNK).map((v: any) => ({
+      variant_id: v.id,
+      product_id: v.product_id,
+      total_stock: 0,
+    }));
+    const { error } = await supabase.from("inventory").insert(chunk);
+    if (!error) fixed += chunk.length;
+  }
+
+  return fixed;
+}
