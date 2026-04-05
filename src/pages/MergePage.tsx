@@ -152,7 +152,12 @@ function ConsolidateTab() {
   const handleConsolidate = async () => {
     if (!keepProductId) return toast.error("Choose a parent product");
     if (selectedList.length < 2) return toast.error("Select at least 2 products");
-    const missing = selectedList.find((s) => !s.variantName.trim());
+    // Only require variant name if the product has a single unnamed variant
+    const missing = selectedList.find((s) => {
+      const hasMultipleNamedVariants = s.product.variants.length > 1 || 
+        (s.product.variants.length === 1 && s.product.variants[0].name !== "Default" && s.product.variants[0].name !== "");
+      return !hasMultipleNamedVariants && !s.variantName.trim();
+    });
     if (missing) return toast.error(`Set a variant name for "${missing.product.name}"`);
 
     await consolidate.mutateAsync({
@@ -289,15 +294,24 @@ function ConsolidateTab() {
                         </button>
                       )}
                     </div>
-                    <div>
-                      <label className="text-xs text-muted-foreground mb-1 block">Variant name (e.g. 4005, Red, Large)</label>
-                      <Input
-                        value={sel.variantName}
-                        onChange={(e) => updateVariantName(sel.product.id, e.target.value)}
-                        placeholder="Variant name…"
-                        className="text-sm h-8"
-                      />
-                    </div>
+                    {/* If product already has multiple named variants, just show them */}
+                    {sel.product.variants.length > 1 || 
+                     (sel.product.variants.length === 1 && sel.product.variants[0].name !== "Default" && sel.product.variants[0].name !== "") ? (
+                      <div className="text-xs text-muted-foreground bg-muted/50 rounded p-2">
+                        <span className="font-medium text-foreground">{sel.product.variants.length} variant{sel.product.variants.length !== 1 ? "s" : ""} will be moved as-is:</span>{" "}
+                        {sel.product.variants.map((v) => v.name).join(", ")}
+                      </div>
+                    ) : (
+                      <div>
+                        <label className="text-xs text-muted-foreground mb-1 block">Variant name (e.g. 4005, Red, Large)</label>
+                        <Input
+                          value={sel.variantName}
+                          onChange={(e) => updateVariantName(sel.product.id, e.target.value)}
+                          placeholder="Variant name…"
+                          className="text-sm h-8"
+                        />
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
@@ -685,3 +699,4 @@ function VariantColumn({
 }
 
 export default MergePage;
+
