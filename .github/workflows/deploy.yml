@@ -1,4 +1,4 @@
-name: Deploy to GitHub Pages
+name: Deploy
 
 on:
   push:
@@ -15,8 +15,28 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  deploy-functions:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Deploy Supabase Edge Functions
+        run: |
+          supabase functions deploy ebay-import --project-ref czoppjnkjxmduldxlbqh --no-verify-jwt
+          supabase functions deploy squarespace-import --project-ref czoppjnkjxmduldxlbqh --no-verify-jwt
+          supabase functions deploy push-stock --project-ref czoppjnkjxmduldxlbqh --no-verify-jwt
+          supabase functions deploy sync-orders --project-ref czoppjnkjxmduldxlbqh --no-verify-jwt
+          supabase functions deploy ebay-auth --project-ref czoppjnkjxmduldxlbqh --no-verify-jwt
+        env:
+          SUPABASE_ACCESS_TOKEN: sbp_829d47e84a87693907aaf53ee56a10fcabfdff94
+
   build-and-deploy:
     runs-on: ubuntu-latest
+    needs: deploy-functions
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
