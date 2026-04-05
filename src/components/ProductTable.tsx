@@ -98,8 +98,8 @@ const ProductTable = () => {
     let ebayMargin: number | null = null;
     if (p.ebay_price && p.ebay_price > 0) {
       const sale = p.ebay_price;
-      // eBay: FVF 10.9% + £0.30 trxn + £0.12, all + 20% VAT
-      const fees = (sale * 0.109 + 0.30 + 0.12) * 1.20;
+      // eBay: FVF 10.9% + £0.30 trxn + £0.03 regulatory, all + 20% VAT, plus £4 flat shipping
+      const fees = (sale * 0.109 + 0.30 + 0.03) * 1.20 + 4; // £4 flat shipping included in eBay price
       ebayMargin = ((sale - cost - fees) / sale) * 100;
     }
 
