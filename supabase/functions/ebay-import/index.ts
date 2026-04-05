@@ -198,24 +198,27 @@ async function fullInsert(supabase: any, items: EbayItem[]) {
   const now = new Date().toISOString();
   const CHUNK = 50;
 
-  // Pass 1: Insert all unique products
+  // Pass 1: Insert all unique products — key by itemId (never by sku!)
+  // eBay custom labels (sku) are NOT unique across listings, so we MUST use itemId.
   const productRows = [...new Map(
-    items.map(i => [i.sku, { name: i.title, sku: i.sku, active: true }])
+    items.map(i => [i.itemId, { name: i.title, sku: i.itemId, active: true }])
   ).values()];
 
-  const productBySku = new Map<string, string>();
+  // productByItemId: ebay itemId → DB product uuid
+  const productByItemId = new Map<string, string>();
   for (let i = 0; i < productRows.length; i += CHUNK) {
     const { data: inserted } = await supabase
       .from("products")
       .insert(productRows.slice(i, i + CHUNK))
       .select("id, sku");
-    for (const p of (inserted ?? []) as any[]) productBySku.set(p.sku, p.id);
+    // sku column was set to itemId above
+    for (const p of (inserted ?? []) as any[]) productByItemId.set(p.sku, p.id);
   }
 
   // Pass 2: Insert all variants
   const variantRows: { product_id: string; internal_sku: string; option1: string | null }[] = [];
   for (const item of items) {
-    const productId = productBySku.get(item.sku);
+    const productId = productByItemId.get(item.itemId);
     if (!productId) continue;
     if (item.variations.length > 0) {
       for (const v of item.variations) {
@@ -244,7 +247,7 @@ async function fullInsert(supabase: any, items: EbayItem[]) {
   const listRows: any[] = [];
 
   for (const item of items) {
-    const prodId = productBySku.get(item.sku);
+    const prodId = productByItemId.get(item.itemId);
     if (!prodId) continue;
     const cpid = `v1|${item.itemId}|0`;
 
@@ -342,7 +345,7 @@ async function quickSyncWithNewListings(supabase: any, items: EbayItem[]) {
   const { data: allProducts } = await supabase.from("products").select("id, name");
   const productByName = new Map<string, string>();
   for (const p of (allProducts ?? []) as any[]) {
-    productByName.set(p.name.toLowerCase().trim(), p.id);
+    // auto name-match removed
   }
 
   // 3. Process each eBay item
@@ -375,7 +378,7 @@ async function quickSyncWithNewListings(supabase: any, items: EbayItem[]) {
           updateBatch.push({ id: existingId, channel_price: parseFloat(v.price), last_synced_at: now });
         } else {
           // New variation — find product via same eBay item ID, then name, then create
-          const productId = cpidToProductId.get(cpid) ?? productByName.get(item.title.toLowerCase().trim()) ?? null;
+          const productId = cpidToProductId.get(cpid) ?? null; // No name-matching — user links products manually via Merge page
           const iSku = v.sku || `${item.itemId}-${v.name}`;
           newEntries.push({
             productId,
@@ -398,7 +401,7 @@ async function quickSyncWithNewListings(supabase: any, items: EbayItem[]) {
       if (existingId) {
         updateBatch.push({ id: existingId, channel_price: parseFloat(item.price), last_synced_at: now });
       } else {
-        const productId = cpidToProductId.get(cpid) ?? productByName.get(item.title.toLowerCase().trim()) ?? null;
+        const productId = cpidToProductId.get(cpid) ?? null; // No name-matching — user links products manually via Merge page
         newEntries.push({
           productId,
           productName: item.title,
@@ -538,3 +541,4 @@ async function ensureInventoryRows(supabase: any): Promise<number> {
 
   return fixed;
 }
+
