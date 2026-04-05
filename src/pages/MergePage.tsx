@@ -1,12 +1,15 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import DashboardSidebar from "@/components/DashboardSidebar";
 import {
   useUnmergedProducts,
   useMergeProducts,
   useUnmergedVariants,
   useMergeVariants,
+  useAllProductsForConsolidate,
+  useConsolidateProducts,
   type UnmergedProduct,
   type UnmergedVariant,
+  type ConsolidatableProduct,
 } from "@/hooks/use-merge";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -17,10 +20,10 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { Loader2, Link2, Undo2, Search, ArrowRight } from "lucide-react";
+import { Loader2, Link2, Undo2, Search, ArrowRight, Layers } from "lucide-react";
 import { toast } from "sonner";
 
-type TabId = "products" | "variants";
+type TabId = "products" | "variants" | "consolidate";
 
 const MergePage = () => {
   const [tab, setTab] = useState<TabId>("products");
@@ -58,14 +61,266 @@ const MergePage = () => {
           >
             By Variant
           </button>
+          <button
+            onClick={() => setTab("consolidate")}
+            className={`px-4 py-2 text-sm font-medium transition-colors border-b-2 -mb-px ${
+              tab === "consolidate"
+                ? "border-primary text-foreground"
+                : "border-transparent text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            Consolidate
+          </button>
         </div>
 
         {tab === "products" && <ProductMergeTab />}
         {tab === "variants" && <VariantMergeTab />}
+        {tab === "consolidate" && <ConsolidateTab />}
       </main>
     </div>
   );
 };
+
+// ─── Consolidate tab ──────────────────────────────────────────────────────────
+// Select multiple products → collapse them into one parent product with variants.
+// Each product becomes a named variant. Channel listings stay attached to their
+// variant, so eBay + Squarespace both remain linked after consolidation.
+
+type ConsolidateSelection = {
+  product: ConsolidatableProduct;
+  variantId: string;
+  variantName: string;
+};
+
+function ConsolidateTab() {
+  const { data: allProducts = [], isLoading, error } = useAllProductsForConsolidate();
+  const consolidate = useConsolidateProducts();
+
+  const [search, setSearch] = useState("");
+  // productId → ConsolidateSelection
+  const [selected, setSelected] = useState<Map<string, ConsolidateSelection>>(new Map());
+  const [parentName, setParentName] = useState("");
+  const [keepProductId, setKeepProductId] = useState<string | null>(null);
+
+  const filtered = useMemo(() => {
+    if (!search.trim()) return [];
+    const q = search.toLowerCase();
+    return allProducts.filter(
+      (p) =>
+        p.name.toLowerCase().includes(q) ||
+        (p.sku?.toLowerCase().includes(q) ?? false)
+    );
+  }, [allProducts, search]);
+
+  const selectedList = Array.from(selected.values());
+
+  const toggleProduct = (product: ConsolidatableProduct) => {
+    const next = new Map(selected);
+    if (next.has(product.id)) {
+      next.delete(product.id);
+      if (keepProductId === product.id) {
+        setKeepProductId(next.size > 0 ? next.keys().next().value : null);
+      }
+    } else {
+      const firstVariant = product.variants[0];
+      next.set(product.id, {
+        product,
+        variantId: firstVariant?.id ?? "",
+        variantName: firstVariant?.name === "Default" ? "" : (firstVariant?.name ?? ""),
+      });
+      if (!keepProductId) {
+        setKeepProductId(product.id);
+        setParentName(product.name);
+      }
+    }
+    setSelected(next);
+  };
+
+  const updateVariantName = (productId: string, name: string) => {
+    const next = new Map(selected);
+    const entry = next.get(productId);
+    if (entry) next.set(productId, { ...entry, variantName: name });
+    setSelected(next);
+  };
+
+  const setKeep = (productId: string) => {
+    setKeepProductId(productId);
+    const prod = selected.get(productId)?.product;
+    if (prod) setParentName(prod.name);
+  };
+
+  const handleConsolidate = async () => {
+    if (!keepProductId) return toast.error("Choose a parent product");
+    if (selectedList.length < 2) return toast.error("Select at least 2 products");
+    const missing = selectedList.find((s) => !s.variantName.trim());
+    if (missing) return toast.error(`Set a variant name for "${missing.product.name}"`);
+
+    await consolidate.mutateAsync({
+      keepProductId,
+      parentName: parentName.trim() || selectedList[0].product.name,
+      selections: selectedList.map((s) => ({
+        productId: s.product.id,
+        variantId: s.variantId,
+        variantName: s.variantName.trim(),
+      })),
+    });
+
+    setSelected(new Map());
+    setKeepProductId(null);
+    setParentName("");
+    setSearch("");
+  };
+
+  return (
+    <>
+      <p className="text-xs text-muted-foreground mb-4">
+        Use this when several separate listings are actually <strong>size/colour variants of the same product</strong> (e.g. three separate eBay listings for a 3005, 4005 and 5005 reel). Search, tick them all, name each variant, then hit <strong>Consolidate</strong>. They'll collapse into one product row with a variant dropdown — eBay &amp; Squarespace stay linked on each variant.
+      </p>
+
+      <div className="grid grid-cols-2 gap-6">
+        {/* LEFT — search + checklist */}
+        <div>
+          <div className="relative mb-3">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+            <Input
+              placeholder="Search products to consolidate…"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              className="pl-10"
+            />
+          </div>
+
+          {isLoading && (
+            <div className="flex items-center justify-center p-8">
+              <Loader2 className="w-5 h-5 animate-spin text-muted-foreground" />
+            </div>
+          )}
+          {error && <p className="text-destructive text-sm p-4">Failed to load products.</p>}
+
+          {!isLoading && !error && (
+            <>
+              {!search.trim() && (
+                <div className="flex flex-col items-center justify-center p-12 text-center text-muted-foreground">
+                  <Search className="w-7 h-7 mb-2 opacity-40" />
+                  <p className="text-sm">Type to search and select products to consolidate</p>
+                </div>
+              )}
+              {search.trim() && filtered.length === 0 && (
+                <p className="text-sm text-muted-foreground text-center p-8">No products match</p>
+              )}
+              <div className="space-y-2 max-h-[calc(100vh-380px)] overflow-y-auto pr-1">
+                {filtered.map((product) => {
+                  const isChecked = selected.has(product.id);
+                  return (
+                    <button
+                      key={product.id}
+                      onClick={() => toggleProduct(product)}
+                      className={`w-full text-left p-3 rounded-lg border transition-colors flex items-start gap-3 ${
+                        isChecked
+                          ? "border-primary bg-primary/10"
+                          : "border-border bg-card hover:bg-muted/50"
+                      }`}
+                    >
+                      <div className={`mt-0.5 w-4 h-4 rounded border flex-shrink-0 flex items-center justify-center transition-colors ${
+                        isChecked ? "bg-primary border-primary" : "border-muted-foreground"
+                      }`}>
+                        {isChecked && (
+                          <svg className="w-2.5 h-2.5 text-primary-foreground" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={3}>
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7" />
+                          </svg>
+                        )}
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-medium text-foreground truncate">{product.name}</p>
+                        <div className="flex items-center gap-2 mt-0.5">
+                          {product.sku && (
+                            <span className="text-xs font-mono text-muted-foreground">{product.sku}</span>
+                          )}
+                          <span className="text-xs text-muted-foreground">
+                            {product.variants.length} variant{product.variants.length !== 1 ? "s" : ""}
+                          </span>
+                        </div>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* RIGHT — consolidation panel */}
+        <div>
+          {selectedList.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-full p-12 text-center text-muted-foreground border rounded-xl border-dashed">
+              <Layers className="w-7 h-7 mb-2 opacity-40" />
+              <p className="text-sm">Tick products on the left to set them up as variants</p>
+            </div>
+          ) : (
+            <div className="bg-card border rounded-xl p-5 space-y-4">
+              <h3 className="text-sm font-semibold text-foreground">Consolidation Setup</h3>
+
+              {/* Parent product name */}
+              <div>
+                <label className="text-xs text-muted-foreground mb-1 block">Parent product name</label>
+                <Input
+                  value={parentName}
+                  onChange={(e) => setParentName(e.target.value)}
+                  placeholder="e.g. Mikado Intro Carp Reel"
+                  className="text-sm"
+                />
+              </div>
+
+              <div className="space-y-3">
+                {selectedList.map((sel) => (
+                  <div key={sel.product.id} className={`p-3 rounded-lg border ${
+                    keepProductId === sel.product.id ? "border-primary bg-primary/5" : "border-border"
+                  }`}>
+                    <div className="flex items-center justify-between mb-2">
+                      <p className="text-xs font-medium text-foreground truncate flex-1 mr-2">{sel.product.name}</p>
+                      {keepProductId === sel.product.id ? (
+                        <Badge className="bg-primary text-primary-foreground text-xs flex-shrink-0">Parent</Badge>
+                      ) : (
+                        <button
+                          onClick={() => setKeep(sel.product.id)}
+                          className="text-xs text-muted-foreground hover:text-primary transition-colors flex-shrink-0"
+                        >
+                          Set as parent
+                        </button>
+                      )}
+                    </div>
+                    <div>
+                      <label className="text-xs text-muted-foreground mb-1 block">Variant name (e.g. 4005, Red, Large)</label>
+                      <Input
+                        value={sel.variantName}
+                        onChange={(e) => updateVariantName(sel.product.id, e.target.value)}
+                        placeholder="Variant name…"
+                        className="text-sm h-8"
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <Button
+                className="w-full"
+                onClick={handleConsolidate}
+                disabled={selectedList.length < 2 || consolidate.isPending}
+              >
+                {consolidate.isPending ? (
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                ) : (
+                  <Layers className="w-4 h-4 mr-2" />
+                )}
+                Consolidate {selectedList.length} Products into Variants
+              </Button>
+            </div>
+          )}
+        </div>
+      </div>
+    </>
+  );
+}
 
 // ─── Product-level merge tab ──────────────────────────────────────────────────
 
@@ -76,7 +331,6 @@ function ProductMergeTab() {
   const [selectedEbay, setSelectedEbay] = useState<UnmergedProduct | null>(null);
   const [selectedSqsp, setSelectedSqsp] = useState<UnmergedProduct | null>(null);
 
-  // Only show results when the user has typed something.
   const filtered = search.trim()
     ? unmerged.filter(
         (p) =>
@@ -136,10 +390,9 @@ function ProductMergeTab() {
       </div>
 
       <p className="text-xs text-muted-foreground mb-4">
-        Search for a product to find it in each column, then click <strong>Merge Selected</strong>. Variants are auto-matched by name — use the <strong>By Variant</strong> tab if you need to match them manually.
+        Search for a product to find it in each column, then click <strong>Merge Selected</strong>. Variants are auto-matched by name — use the <strong>By Variant</strong> tab if you need to match them manually. For products that are size/colour variants of the same item, use the <strong>Consolidate</strong> tab instead.
       </p>
 
-      {/* Selection preview */}
       {(selectedEbay || selectedSqsp) && (
         <div className="bg-card border rounded-xl p-4 mb-6 flex items-center gap-4">
           <div className="flex-1 text-center">
@@ -264,10 +517,6 @@ function VariantMergeTab() {
   const [selectedEbay, setSelectedEbay] = useState<UnmergedVariant | null>(null);
   const [selectedSqsp, setSelectedSqsp] = useState<UnmergedVariant | null>(null);
 
-  // Search on product_name ONLY.
-  // We do NOT search variant_name or channel_sku — variant_name is often a raw
-  // SKU string (e.g. "SQ0415520") or a generic label like "Rod Only", which causes
-  // completely unrelated products to appear. The user searches for a product name.
   const filtered = search.trim()
     ? variants.filter((v) =>
         v.product_name.toLowerCase().includes(search.toLowerCase())
@@ -317,7 +566,6 @@ function VariantMergeTab() {
         Search for a product, pick the matching eBay and Squarespace variants, then click <strong>Link Variants</strong>. After linking they share the same inventory — a sale on either platform adjusts both.
       </p>
 
-      {/* Selection preview */}
       {(selectedEbay || selectedSqsp) && (
         <div className="bg-card border rounded-xl p-4 mb-6 flex items-center gap-4">
           <div className="flex-1 text-center">
