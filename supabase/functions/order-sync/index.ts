@@ -401,7 +401,7 @@ async function pushStockToEbay(supabase: any, variantId: string, stock: number, 
   const { data: listings } = await supabase.from("channel_listings")
     .select("channel_product_id, channel_sku").eq("variant_id", variantId).eq("channel", "ebay");
   for (const l of listings ?? []) {
-    const itemId = l.channel_product_id?.match(/(\d+)/)?.[1] ?? l.channel_product_id;
+    const itemId = l.channel_product_id?.replace(/^v1\|/, "").replace(/\|.*$/, "") ?? l.channel_product_id;
     const xml = `<?xml version="1.0" encoding="utf-8"?>
 <ReviseInventoryStatusRequest xmlns="urn:ebay:apis:eBLBaseComponents">
   <RequesterCredentials><eBayAuthToken>${token}</eBayAuthToken></RequesterCredentials>
