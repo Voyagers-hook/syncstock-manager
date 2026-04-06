@@ -181,8 +181,6 @@ async function upsertProducts(supabase: any, squarespaceProducts: SqProduct[]) {
   let variantsReused = 0;
   let listingsCreated = 0;
   let listingsUpdated = 0;
-  const _t0 = Date.now();
-  const _timings: Record<string,number> = {};
   const batchListingUpserts: any[] = [];
   const batchListingInserts: { variantId: string; payload: any; productId: string; sqVariantId: string }[] = [];
 
@@ -193,7 +191,6 @@ async function upsertProducts(supabase: any, squarespaceProducts: SqProduct[]) {
     squarespaceProducts.map((product) => product.name),
     "id, name, active",
   );
-  _timings.existingProducts = Date.now() - _t0;
 
   // productIdByName removed — no auto name-matching; user merges platforms manually
 
@@ -202,7 +199,6 @@ async function upsertProducts(supabase: any, squarespaceProducts: SqProduct[]) {
     squarespaceProducts.flatMap((product) => product.variants.map((variant) => variant.id)),
   );
 
-  _timings.existingListings = Date.now() - _t0;
   const listingByExternalVariantId = new Map<string, { id: string; variant_id: string; product_id: string | null | undefined }>();
   for (const listing of existingListings) {
     if (!listingByExternalVariantId.has(listing.channel_variant_id)) {
@@ -260,7 +256,6 @@ async function upsertProducts(supabase: any, squarespaceProducts: SqProduct[]) {
     productHasInventory.set(inv.product_id, true);
   }
 
-  _timings.setupDone = Date.now() - _t0;
   for (const sqProduct of squarespaceProducts) {
     const imageUrl = sqProduct.images?.[0]?.url || null;
     const canonicalListing = sqProduct.variants
@@ -388,8 +383,6 @@ async function upsertProducts(supabase: any, squarespaceProducts: SqProduct[]) {
     }
   }
 
-  _timings.loopDone = Date.now() - _t0;
-
   // Bulk execute listing updates
   const LCHUNK = 200;
   if (batchListingUpserts.length > 0) {
@@ -411,8 +404,6 @@ async function upsertProducts(supabase: any, squarespaceProducts: SqProduct[]) {
       }
     }
   }
-  _timings.bulkUpsertDone = Date.now() - _t0;
-
   return {
     total_squarespace_products: squarespaceProducts.length,
     products_created: productsCreated,
@@ -421,7 +412,6 @@ async function upsertProducts(supabase: any, squarespaceProducts: SqProduct[]) {
     variants_reused: variantsReused,
     listings_created: listingsCreated,
     listings_updated: listingsUpdated,
-    _timings,
   };
 }
 
