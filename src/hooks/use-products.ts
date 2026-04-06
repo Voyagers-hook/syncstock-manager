@@ -342,8 +342,7 @@ export function useUpdateInventory() {
       });
 
       if (syncError) {
-        console.warn("push-stock network error:", syncError.message);
-        return { pushError: syncError.message };
+        throw new Error(`Stock saved locally but failed to reach sync service. Please check your connection and try again. (${syncError.message})`);
       }
 
       const failedChannels = (data?.results ?? [])
