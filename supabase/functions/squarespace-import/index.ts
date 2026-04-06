@@ -181,8 +181,8 @@ async function upsertProducts(supabase: any, squarespaceProducts: SqProduct[]) {
   let variantsReused = 0;
   let listingsCreated = 0;
   let listingsUpdated = 0;
-
-  // Collect listing upserts for bulk operation at the end
+  const _t0 = Date.now();
+  const _timings: Record<string,number> = {};
   const batchListingUpserts: any[] = [];
   const batchListingInserts: { variantId: string; payload: any; productId: string; sqVariantId: string }[] = [];
 
@@ -193,6 +193,7 @@ async function upsertProducts(supabase: any, squarespaceProducts: SqProduct[]) {
     squarespaceProducts.map((product) => product.name),
     "id, name, active",
   );
+  _timings.existingProducts = Date.now() - _t0;
 
   // productIdByName removed — no auto name-matching; user merges platforms manually
 
@@ -201,6 +202,7 @@ async function upsertProducts(supabase: any, squarespaceProducts: SqProduct[]) {
     squarespaceProducts.flatMap((product) => product.variants.map((variant) => variant.id)),
   );
 
+  _timings.existingListings = Date.now() - _t0;
   const listingByExternalVariantId = new Map<string, { id: string; variant_id: string; product_id: string | null | undefined }>();
   for (const listing of existingListings) {
     if (!listingByExternalVariantId.has(listing.channel_variant_id)) {
@@ -258,6 +260,7 @@ async function upsertProducts(supabase: any, squarespaceProducts: SqProduct[]) {
     productHasInventory.set(inv.product_id, true);
   }
 
+  _timings.setupDone = Date.now() - _t0;
   for (const sqProduct of squarespaceProducts) {
     const imageUrl = sqProduct.images?.[0]?.url || null;
     const canonicalListing = sqProduct.variants
@@ -375,7 +378,6 @@ async function upsertProducts(supabase: any, squarespaceProducts: SqProduct[]) {
         last_synced_at: new Date().toISOString(),
       };
 
-      // Collect for batch upsert instead of per-row calls
       if (existingListing) {
         batchListingUpserts.push({ id: existingListing.id, ...listingPayload });
         listingsUpdated++;
@@ -386,14 +388,15 @@ async function upsertProducts(supabase: any, squarespaceProducts: SqProduct[]) {
     }
   }
 
-  // Bulk execute listing updates (replace 1000s of per-row calls with chunked upserts)
+  _timings.loopDone = Date.now() - _t0;
+
+  // Bulk execute listing updates
   const LCHUNK = 200;
   if (batchListingUpserts.length > 0) {
     for (let ci = 0; ci < batchListingUpserts.length; ci += LCHUNK) {
       await supabase.from("channel_listings").upsert(batchListingUpserts.slice(ci, ci + LCHUNK));
     }
   }
-  // New listings: upsert by channel+channel_variant_id
   if (batchListingInserts.length > 0) {
     const insertPayloads = batchListingInserts.map(b => b.payload);
     for (let ci = 0; ci < insertPayloads.length; ci += LCHUNK) {
@@ -402,13 +405,13 @@ async function upsertProducts(supabase: any, squarespaceProducts: SqProduct[]) {
         .select("id, variant_id, channel_variant_id");
       for (const row of (inserted ?? [])) {
         listingByExternalVariantId.set(row.channel_variant_id, {
-          id: row.id,
-          variant_id: row.variant_id,
+          id: row.id, variant_id: row.variant_id,
           product_id: batchListingInserts.find(b => b.sqVariantId === row.channel_variant_id)?.productId ?? null,
         });
       }
     }
   }
+  _timings.bulkUpsertDone = Date.now() - _t0;
 
   return {
     total_squarespace_products: squarespaceProducts.length,
@@ -418,6 +421,7 @@ async function upsertProducts(supabase: any, squarespaceProducts: SqProduct[]) {
     variants_reused: variantsReused,
     listings_created: listingsCreated,
     listings_updated: listingsUpdated,
+    _timings,
   };
 }
 
