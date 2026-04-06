@@ -4,7 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Loader2, Trophy } from "lucide-react";
 
 const TopSellersPage = () => {
-  const { data: sellers = [], isLoading, error } = useTopSellers(20);
+  const { data: sellers = [], isLoading, error } = useTopSellers(12);
 
   return (
     <div className="min-h-screen bg-background">
@@ -15,7 +15,7 @@ const TopSellersPage = () => {
             <Trophy className="w-6 h-6 text-warning" />
             <div>
               <h1 className="text-2xl font-bold text-foreground tracking-tight">
-                Top 20 Sellers
+                Top 12 Sellers
               </h1>
               <p className="text-sm text-muted-foreground mt-1">
                 Best performing products by units sold across all platforms
@@ -62,19 +62,7 @@ const TopSellersPage = () => {
                       Units Sold
                     </th>
                     <th className="text-right text-xs font-medium text-muted-foreground uppercase tracking-wider px-5 py-3">
-                      Revenue
-                    </th>
-                    <th className="text-right text-xs font-medium text-muted-foreground uppercase tracking-wider px-5 py-3">
-                      Avg Price
-                    </th>
-                    <th className="text-right text-xs font-medium text-muted-foreground uppercase tracking-wider px-5 py-3">
-                      Cost
-                    </th>
-                    <th className="text-right text-xs font-medium text-muted-foreground uppercase tracking-wider px-5 py-3">
-                      Margin
-                    </th>
-                    <th className="text-center text-xs font-medium text-muted-foreground uppercase tracking-wider px-5 py-3">
-                      Stock
+                      Total Sales
                     </th>
                     <th className="text-center text-xs font-medium text-muted-foreground uppercase tracking-wider px-5 py-3">
                       Platforms
@@ -82,92 +70,56 @@ const TopSellersPage = () => {
                   </tr>
                 </thead>
                 <tbody>
-                  {sellers.map((seller, idx) => {
-                    const margin =
-                      seller.cost_price && seller.avg_price > 0
-                        ? (((seller.avg_price - seller.cost_price) / seller.avg_price) * 100).toFixed(1)
-                        : "—";
-
-                    return (
-                      <tr
-                        key={seller.product_id}
-                        className="border-b last:border-b-0 hover:bg-muted/30 transition-colors"
-                      >
-                        <td className="px-4 py-3.5 text-center">
-                          <span
-                            className={`text-sm font-bold ${
-                              idx < 3 ? "text-warning" : "text-muted-foreground"
-                            }`}
-                          >
-                            {idx + 1}
-                          </span>
-                        </td>
-                        <td className="px-5 py-3.5">
-                          <span className="text-sm font-medium text-foreground truncate max-w-[250px] block">
-                            {seller.item_name}
-                          </span>
-                        </td>
-                        <td className="px-5 py-3.5">
-                          <span className="text-xs font-mono text-muted-foreground">
-                            {seller.sku ?? "—"}
-                          </span>
-                        </td>
-                        <td className="px-5 py-3.5 text-center">
-                          <span className="text-sm font-semibold text-foreground">
-                            {seller.total_quantity}
-                          </span>
-                        </td>
-                        <td className="px-5 py-3.5 text-right">
-                          <span className="text-sm text-foreground">
-                            £{seller.total_revenue.toFixed(2)}
-                          </span>
-                        </td>
-                        <td className="px-5 py-3.5 text-right">
-                          <span className="text-sm text-foreground">
-                            £{seller.avg_price.toFixed(2)}
-                          </span>
-                        </td>
-                        <td className="px-5 py-3.5 text-right">
-                          <span className="text-sm text-muted-foreground">
-                            {seller.cost_price != null
-                              ? `£${seller.cost_price.toFixed(2)}`
-                              : "—"}
-                          </span>
-                        </td>
-                        <td className="px-5 py-3.5 text-right">
-                          <span className="text-sm font-medium text-success">
-                            {margin}
-                            {margin !== "—" ? "%" : ""}
-                          </span>
-                        </td>
-                        <td className="px-5 py-3.5 text-center">
-                          {seller.total_stock === 0 ? (
-                            <Badge variant="destructive" className="text-xs">
-                              0
+                  {sellers.map((seller, idx) => (
+                    <tr
+                      key={seller.product_id}
+                      className="border-b last:border-b-0 hover:bg-muted/30 transition-colors"
+                    >
+                      <td className="px-4 py-3.5 text-center">
+                        <span
+                          className={`text-sm font-bold ${
+                            idx < 3 ? "text-warning" : "text-muted-foreground"
+                          }`}
+                        >
+                          {idx + 1}
+                        </span>
+                      </td>
+                      <td className="px-5 py-3.5">
+                        <span className="text-sm font-medium text-foreground truncate max-w-[320px] block">
+                          {seller.item_name}
+                        </span>
+                      </td>
+                      <td className="px-5 py-3.5">
+                        <span className="text-xs font-mono text-muted-foreground">
+                          {seller.sku ?? "—"}
+                        </span>
+                      </td>
+                      <td className="px-5 py-3.5 text-center">
+                        <span className="text-sm font-semibold text-foreground">
+                          {seller.total_quantity}
+                        </span>
+                      </td>
+                      <td className="px-5 py-3.5 text-right">
+                        <span className="text-sm font-semibold text-foreground">
+                          £{seller.total_revenue.toFixed(2)}
+                        </span>
+                      </td>
+                      <td className="px-5 py-3.5 text-center">
+                        <div className="flex items-center justify-center gap-1">
+                          {seller.platforms.includes("ebay") && (
+                            <Badge variant="outline" className="text-xs">
+                              eBay
                             </Badge>
-                          ) : (
-                            <span className="text-sm font-semibold text-foreground">
-                              {seller.total_stock}
-                            </span>
                           )}
-                        </td>
-                        <td className="px-5 py-3.5 text-center">
-                          <div className="flex items-center justify-center gap-1">
-                            {seller.platforms.includes("ebay") && (
-                              <Badge variant="outline" className="text-xs">
-                                eBay
-                              </Badge>
-                            )}
-                            {seller.platforms.includes("squarespace") && (
-                              <Badge variant="outline" className="text-xs">
-                                Sqsp
-                              </Badge>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
+                          {seller.platforms.includes("squarespace") && (
+                            <Badge variant="outline" className="text-xs">
+                              Sqsp
+                            </Badge>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>
