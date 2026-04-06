@@ -1,25 +1,51 @@
+import { useState } from "react";
 import DashboardSidebar from "@/components/DashboardSidebar";
 import { useTopSellers } from "@/hooks/use-top-sellers";
 import { Badge } from "@/components/ui/badge";
 import { Loader2, Trophy } from "lucide-react";
 
 const TopSellersPage = () => {
-  const { data: sellers = [], isLoading, error } = useTopSellers(12);
+  const [sortBy, setSortBy] = useState<"quantity" | "revenue">("quantity");
+  const { data: sellers = [], isLoading, error } = useTopSellers(12, sortBy);
 
   return (
     <div className="min-h-screen bg-background">
       <DashboardSidebar />
       <main className="ml-60 p-8">
         <div className="mb-8">
-          <div className="flex items-center gap-3">
-            <Trophy className="w-6 h-6 text-warning" />
-            <div>
-              <h1 className="text-2xl font-bold text-foreground tracking-tight">
-                Top 12 Sellers
-              </h1>
-              <p className="text-sm text-muted-foreground mt-1">
-                Best performing variants by units sold across all platforms
-              </p>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <Trophy className="w-6 h-6 text-warning" />
+              <div>
+                <h1 className="text-2xl font-bold text-foreground tracking-tight">
+                  Top 12 Sellers
+                </h1>
+                <p className="text-sm text-muted-foreground mt-1">
+                  Best performing variants across all platforms
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-1 bg-muted rounded-lg p-1">
+              <button
+                onClick={() => setSortBy("quantity")}
+                className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                  sortBy === "quantity"
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                Units Sold
+              </button>
+              <button
+                onClick={() => setSortBy("revenue")}
+                className={`px-4 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                  sortBy === "revenue"
+                    ? "bg-background text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                Total Sales £
+              </button>
             </div>
           </div>
         </div>
@@ -95,12 +121,12 @@ const TopSellersPage = () => {
                         </span>
                       </td>
                       <td className="px-5 py-3.5 text-center">
-                        <span className="text-sm font-semibold text-foreground">
+                        <span className={`text-sm font-semibold ${sortBy === "quantity" ? "text-foreground" : "text-muted-foreground"}`}>
                           {seller.total_quantity}
                         </span>
                       </td>
                       <td className="px-5 py-3.5 text-right">
-                        <span className="text-sm font-semibold text-foreground">
+                        <span className={`text-sm font-semibold ${sortBy === "revenue" ? "text-foreground" : "text-muted-foreground"}`}>
                           £{seller.total_revenue.toFixed(2)}
                         </span>
                       </td>
