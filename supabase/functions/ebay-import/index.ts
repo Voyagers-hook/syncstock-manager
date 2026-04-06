@@ -78,17 +78,14 @@ Deno.serve(async (req) => {
       // ── QUICK SYNC: Update prices on existing + import any new listings ───
       const stats = await quickSyncWithNewListings(supabase, items);
 
-      // Ensure every variant has an inventory row
-      const invFixed = await ensureInventoryRows(supabase);
-
       await supabase.from("sync_log").insert({
         sync_type: "ebay_import",
         status: "completed",
-        details: JSON.stringify({ mode: "quick_sync", ...stats, inventory_gaps_fixed: invFixed }),
+        details: JSON.stringify({ mode: "quick_sync", ...stats }),
         source: "edge_function",
       });
 
-      return json({ success: true, mode: "quick_sync", ...stats, inventory_gaps_fixed: invFixed });
+      return json({ success: true, mode: "quick_sync", ...stats });
     }
 
   } catch (err: unknown) {
@@ -427,12 +424,15 @@ async function quickSyncWithNewListings(supabase: any, items: EbayItem[]) {
     }
   }
 
-  // 4. Apply price updates
-  for (const row of updateBatch) {
-    await supabase.from("channel_listings")
-      .update({ channel_price: row.channel_price, last_synced_at: row.last_synced_at })
-      .eq("id", row.id);
-    updated++;
+  // 4. Apply price updates — bulk upsert instead of per-row to avoid N+1 slowdown
+  if (updateBatch.length > 0) {
+    const UPCHUNK = 200;
+    for (let ci = 0; ci < updateBatch.length; ci += UPCHUNK) {
+      await supabase.from("channel_listings").upsert(
+        updateBatch.slice(ci, ci + UPCHUNK)
+      );
+    }
+    updated = updateBatch.length;
   }
 
   // 5. Create products for entries that still have no productId
