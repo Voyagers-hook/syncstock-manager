@@ -18,7 +18,7 @@ const TopSellersPage = () => {
                 Top 12 Sellers
               </h1>
               <p className="text-sm text-muted-foreground mt-1">
-                Best performing products by units sold across all platforms
+                Best performing variants by units sold across all platforms
               </p>
             </div>
           </div>
@@ -53,7 +53,7 @@ const TopSellersPage = () => {
                       #
                     </th>
                     <th className="text-left text-xs font-medium text-muted-foreground uppercase tracking-wider px-5 py-3">
-                      Product
+                      Variant
                     </th>
                     <th className="text-left text-xs font-medium text-muted-foreground uppercase tracking-wider px-5 py-3">
                       SKU
@@ -72,7 +72,7 @@ const TopSellersPage = () => {
                 <tbody>
                   {sellers.map((seller, idx) => (
                     <tr
-                      key={seller.product_id}
+                      key={seller.variant_key}
                       className="border-b last:border-b-0 hover:bg-muted/30 transition-colors"
                     >
                       <td className="px-4 py-3.5 text-center">
@@ -84,8 +84,8 @@ const TopSellersPage = () => {
                           {idx + 1}
                         </span>
                       </td>
-                      <td className="px-5 py-3.5">
-                        <span className="text-sm font-medium text-foreground truncate max-w-[320px] block">
+                      <td className="px-5 py-3.5 min-w-[300px]">
+                        <span className="text-sm font-medium text-foreground whitespace-normal">
                           {seller.item_name}
                         </span>
                       </td>
