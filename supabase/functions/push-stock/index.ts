@@ -9,6 +9,17 @@ const corsHeaders = {
 const EBAY_API_BASE = "https://api.ebay.com";
 const SQ_API_BASE = "https://api.squarespace.com/1.0";
 
+// XML-escape a string so it can be safely inserted into XML templates
+function xmlEscape(s: string): string {
+  return s.replace(/&/g, "&amp;")
+           .replace(/</g, "&lt;")
+           .replace(/>/g, "&gt;")
+           .replace(/"/g, "&quot;")
+           .replace(/'/g, "&apos;");
+}
+
+
+
 // Accept optional sq_base_price, sq_sale_price, sq_on_sale for Squarespace
 const BodySchema = z.object({
   variantId: z.string().uuid(),
@@ -157,7 +168,7 @@ async function reviseInventoryStatus(
   </RequesterCredentials>
   <InventoryStatus>
     <ItemID>${itemId}</ItemID>
-    ${sku ? `<SKU>${sku}</SKU>` : ""}
+    ${sku ? `<SKU>${xmlEscape(sku)}</SKU>` : ""}
     ${stockXml}
     ${priceXml}
   </InventoryStatus>
@@ -192,8 +203,8 @@ async function reviseItemVariation(
 ): Promise<string> {
   const specificsXml = nameValuePairs.map(({ name, value }: { name: string; value: string }) => `
       <NameValueList>
-        <Name>${name}</Name>
-        <Value>${value}</Value>
+        <Name>${xmlEscape(name)}</Name>
+        <Value>${xmlEscape(value)}</Value>
       </NameValueList>`).join("");
 
   const priceXml = price !== undefined ? `<StartPrice>${price.toFixed(2)}</StartPrice>` : "";
