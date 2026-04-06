@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
 
 export interface TopSeller {
-  product_id: string;
+  variant_key: string;
   item_name: string;
   sku: string | null;
   total_quantity: number;
@@ -16,15 +16,14 @@ export function useTopSellers(limit = 12) {
     queryFn: async (): Promise<TopSeller[]> => {
       const { data: orders, error: oErr } = await supabase
         .from("orders")
-        .select("product_id, sku, item_name, quantity, unit_price, total_price, platform")
-        .not("product_id", "is", null);
+        .select("sku, item_name, quantity, unit_price, total_price, platform");
       if (oErr) throw oErr;
       if (!orders?.length) return [];
 
       const agg = new Map<
         string,
         {
-          product_id: string;
+          variant_key: string;
           item_name: string;
           sku: string | null;
           total_quantity: number;
@@ -34,20 +33,23 @@ export function useTopSellers(limit = 12) {
       >();
 
       for (const o of orders) {
-        if (!o.product_id) continue;
-        const existing = agg.get(o.product_id);
+        // Variant-level grouping: SKU is the variant key; fall back to item_name
+        const key = o.sku ? o.sku.trim() : (o.item_name ?? "unknown").trim();
+        const qty = o.quantity ?? 0;
+        const rev = o.total_price ?? (o.unit_price ?? 0) * qty;
+        const existing = agg.get(key);
         if (existing) {
-          existing.total_quantity += o.quantity ?? 0;
-          existing.total_revenue += o.total_price ?? o.unit_price * (o.quantity ?? 1);
-          existing.platforms.add(o.platform);
+          existing.total_quantity += qty;
+          existing.total_revenue += rev;
+          existing.platforms.add(o.platform ?? "unknown");
         } else {
-          agg.set(o.product_id, {
-            product_id: o.product_id,
+          agg.set(key, {
+            variant_key: key,
             item_name: o.item_name ?? "Unknown",
-            sku: o.sku,
-            total_quantity: o.quantity ?? 0,
-            total_revenue: o.total_price ?? o.unit_price * (o.quantity ?? 1),
-            platforms: new Set([o.platform]),
+            sku: o.sku ?? null,
+            total_quantity: qty,
+            total_revenue: rev,
+            platforms: new Set([o.platform ?? "unknown"]),
           });
         }
       }
@@ -56,7 +58,7 @@ export function useTopSellers(limit = 12) {
         .sort((a, b) => b.total_quantity - a.total_quantity)
         .slice(0, limit)
         .map((s) => ({
-          product_id: s.product_id,
+          variant_key: s.variant_key,
           item_name: s.item_name,
           sku: s.sku,
           total_quantity: s.total_quantity,
