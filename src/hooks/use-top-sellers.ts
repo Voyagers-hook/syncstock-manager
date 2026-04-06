@@ -10,9 +10,9 @@ export interface TopSeller {
   platforms: string[];
 }
 
-export function useTopSellers(limit = 12) {
+export function useTopSellers(limit = 12, sortBy: "quantity" | "revenue" = "quantity") {
   return useQuery({
-    queryKey: ["top-sellers", limit],
+    queryKey: ["top-sellers", limit, sortBy],
     queryFn: async (): Promise<TopSeller[]> => {
       const { data: orders, error: oErr } = await supabase
         .from("orders")
@@ -33,7 +33,6 @@ export function useTopSellers(limit = 12) {
       >();
 
       for (const o of orders) {
-        // Variant-level grouping: SKU is the variant key; fall back to item_name
         const key = o.sku ? o.sku.trim() : (o.item_name ?? "unknown").trim();
         const qty = o.quantity ?? 0;
         const rev = o.total_price ?? (o.unit_price ?? 0) * qty;
@@ -54,17 +53,20 @@ export function useTopSellers(limit = 12) {
         }
       }
 
-      return Array.from(agg.values())
-        .sort((a, b) => b.total_quantity - a.total_quantity)
-        .slice(0, limit)
-        .map((s) => ({
-          variant_key: s.variant_key,
-          item_name: s.item_name,
-          sku: s.sku,
-          total_quantity: s.total_quantity,
-          total_revenue: s.total_revenue,
-          platforms: Array.from(s.platforms),
-        }));
+      const sorted = Array.from(agg.values()).sort((a, b) =>
+        sortBy === "revenue"
+          ? b.total_revenue - a.total_revenue
+          : b.total_quantity - a.total_quantity
+      );
+
+      return sorted.slice(0, limit).map((s) => ({
+        variant_key: s.variant_key,
+        item_name: s.item_name,
+        sku: s.sku,
+        total_quantity: s.total_quantity,
+        total_revenue: s.total_revenue,
+        platforms: Array.from(s.platforms),
+      }));
     },
   });
 }
