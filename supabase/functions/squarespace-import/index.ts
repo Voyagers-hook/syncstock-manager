@@ -33,16 +33,14 @@ Deno.serve(async (req) => {
     const stats = await upsertProducts(supabase, products);
 
     // Ensure every variant has an inventory row after import
-    const invFixed = await ensureInventoryRows(supabase);
-
     await supabase.from("sync_log").insert({
       sync_type: "squarespace_import",
       status: "completed",
-      details: JSON.stringify({ ...stats, inventory_gaps_fixed: invFixed }),
+      details: JSON.stringify({ ...stats }),
       source: "edge_function",
     });
 
-    return new Response(JSON.stringify({ success: true, ...stats, inventory_gaps_fixed: invFixed }), {
+    return new Response(JSON.stringify({ success: true, ...stats }), {
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   } catch (error) {
@@ -183,6 +181,10 @@ async function upsertProducts(supabase: any, squarespaceProducts: SqProduct[]) {
   let variantsReused = 0;
   let listingsCreated = 0;
   let listingsUpdated = 0;
+
+  // Collect listing upserts for bulk operation at the end
+  const batchListingUpserts: any[] = [];
+  const batchListingInserts: { variantId: string; payload: any; productId: string; sqVariantId: string }[] = [];
 
   const existingProducts = await fetchRowsByColumn(
     supabase,
@@ -373,36 +375,37 @@ async function upsertProducts(supabase: any, squarespaceProducts: SqProduct[]) {
         last_synced_at: new Date().toISOString(),
       };
 
+      // Collect for batch upsert instead of per-row calls
       if (existingListing) {
-        const { error: listingErr } = await supabase
-          .from("channel_listings")
-          .update({ ...listingPayload, updated_at: new Date().toISOString() })
-          .eq("id", existingListing.id);
-
-        if (listingErr) {
-          console.error(`Failed to update listing for ${sqProduct.name} / ${variantSku}:`, listingErr);
-          continue;
-        }
-
+        batchListingUpserts.push({ id: existingListing.id, ...listingPayload });
         listingsUpdated++;
       } else {
-        const { data: listing, error: listingErr } = await supabase
-          .from("channel_listings")
-          .insert(listingPayload)
-          .select("id, variant_id, channel_variant_id")
-          .single();
-
-        if (listingErr || !listing) {
-          console.error(`Failed to create listing for ${sqProduct.name} / ${variantSku}:`, listingErr);
-          continue;
-        }
-
-        listingByExternalVariantId.set(listing.channel_variant_id, {
-          id: listing.id,
-          variant_id: listing.variant_id,
-          product_id: productId,
-        });
+        batchListingInserts.push({ variantId: variantId!, payload: listingPayload, productId: productId!, sqVariantId: sqVariant.id });
         listingsCreated++;
+      }
+    }
+  }
+
+  // Bulk execute listing updates (replace 1000s of per-row calls with chunked upserts)
+  const LCHUNK = 200;
+  if (batchListingUpserts.length > 0) {
+    for (let ci = 0; ci < batchListingUpserts.length; ci += LCHUNK) {
+      await supabase.from("channel_listings").upsert(batchListingUpserts.slice(ci, ci + LCHUNK));
+    }
+  }
+  // New listings: upsert by channel+channel_variant_id
+  if (batchListingInserts.length > 0) {
+    const insertPayloads = batchListingInserts.map(b => b.payload);
+    for (let ci = 0; ci < insertPayloads.length; ci += LCHUNK) {
+      const { data: inserted } = await supabase.from("channel_listings")
+        .upsert(insertPayloads.slice(ci, ci + LCHUNK), { onConflict: "channel,channel_variant_id" })
+        .select("id, variant_id, channel_variant_id");
+      for (const row of (inserted ?? [])) {
+        listingByExternalVariantId.set(row.channel_variant_id, {
+          id: row.id,
+          variant_id: row.variant_id,
+          product_id: batchListingInserts.find(b => b.sqVariantId === row.channel_variant_id)?.productId ?? null,
+        });
       }
     }
   }
