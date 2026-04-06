@@ -9,21 +9,32 @@ jobs:
   sync-orders:
     runs-on: ubuntu-latest
     steps:
-      - name: Call order-sync edge function
+      - name: Call order-sync edge function (with retry)
         run: |
-          RESPONSE=$(curl -s -w "\n%{http_code}" \
-            -X POST "${{ secrets.SUPABASE_URL }}/functions/v1/order-sync" \
-            -H "Authorization: Bearer ${{ secrets.SUPABASE_ANON_KEY }}" \
-            -H "apikey: ${{ secrets.SUPABASE_ANON_KEY }}" \
-            -H "Content-Type: application/json")
+          for attempt in 1 2 3; do
+            RESPONSE=$(curl -s -w "\n%{http_code}" \
+              -X POST "${{ secrets.SUPABASE_URL }}/functions/v1/order-sync" \
+              -H "Authorization: Bearer ${{ secrets.SUPABASE_ANON_KEY }}" \
+              -H "apikey: ${{ secrets.SUPABASE_ANON_KEY }}" \
+              -H "Content-Type: application/json")
 
-          HTTP_CODE=$(echo "$RESPONSE" | tail -1)
-          BODY=$(echo "$RESPONSE" | sed '$d')
+            HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+            BODY=$(echo "$RESPONSE" | sed '$d')
 
-          echo "Status: $HTTP_CODE"
-          echo "Response: $BODY"
+            echo "Attempt $attempt - Status: $HTTP_CODE"
+            echo "Response: $BODY"
 
-          if [ "$HTTP_CODE" -ge 400 ]; then
-            echo "::error::Order sync failed with status $HTTP_CODE"
-            exit 1
-          fi
+            if [ "$HTTP_CODE" -eq 200 ]; then
+              echo "Order sync succeeded"
+              exit 0
+            fi
+
+            if [ "$attempt" -lt 3 ]; then
+              echo "Retrying in 15 seconds..."
+              sleep 15
+            fi
+          done
+
+          echo "::error::Order sync failed after 3 attempts with status $HTTP_CODE"
+          exit 1
+
