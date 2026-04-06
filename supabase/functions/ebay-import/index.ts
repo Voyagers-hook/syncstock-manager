@@ -106,9 +106,18 @@ function json(data: unknown, status = 200) {
   });
 }
 
+function decodeXml(s: string): string {
+  return s
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'");
+}
+
 function xtag(xml: string, name: string): string | null {
   const m = xml.match(new RegExp(`<${name}[^>]*>([^<]*)</${name}>`));
-  return m ? m[1].trim() : null;
+  return m ? decodeXml(m[1].trim()) : null;
 }
 
 // ─── eBay XML types ───────────────────────────────────────────────────────────
@@ -176,7 +185,7 @@ async function fetchAllListings(token: string): Promise<EbayItem[]> {
         const vSold = parseInt(xtag(varXml, "QuantitySold") ?? "0", 10);
         // Get variation name from NameValueList
         const nameMatch = varXml.match(/<Value>([^<]+)<\/Value>/);
-        const vName = nameMatch ? nameMatch[1].trim() : vSku;
+        const vName = nameMatch ? decodeXml(nameMatch[1].trim()) : vSku;
         variations.push({ sku: vSku, price: vPrice, name: vName, qty: vQty, sold: vSold });
       }
 
