@@ -114,6 +114,55 @@ Deno.serve(async (req) => {
 });
 
 // ── eBay ─────────────────────────────────────────────────────────────────────
+// Fetch variation specifics from eBay GetItem so we can use VariationSpecifics
+// when the item has no custom labels (SKUs) set on its variations
+async function getVariationSpecificsFromEbay(
+  itemId: string,
+  valueToFind: string,
+  token: string
+): Promise<{ name: string; value: string }[] | null> {
+  const xml = `<?xml version="1.0" encoding="utf-8"?>
+<GetItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">
+  <RequesterCredentials><eBayAuthToken>${token}</eBayAuthToken></RequesterCredentials>
+  <ItemID>${itemId}</ItemID>
+  <DetailLevel>ReturnAll</DetailLevel>
+</GetItemRequest>`;
+
+  const resp = await fetch(`${EBAY_API_BASE}/ws/api.dll`, {
+    method: "POST",
+    headers: {
+      "X-EBAY-API-CALL-NAME": "GetItem",
+      "X-EBAY-API-SITEID": "3",
+      "X-EBAY-API-COMPATIBILITY-LEVEL": "1451",
+      "X-EBAY-API-APP-NAME": Deno.env.get("EBAY_APP_ID") ?? "",
+      "Content-Type": "text/xml",
+    },
+    body: xml,
+  });
+
+  const text = await resp.text();
+  const varMatches = [...text.matchAll(/<Variation>([\s\S]*?)<\/Variation>/g)];
+
+  for (const [, varXml] of varMatches) {
+    const nvlists = [...varXml.matchAll(/<NameValueList>([\s\S]*?)<\/NameValueList>/g)];
+    const pairs: { name: string; value: string }[] = [];
+    let matchFound = false;
+
+    for (const [, nvl] of nvlists) {
+      const nameMatch = nvl.match(/<Name>(.*?)<\/Name>/);
+      const valueMatch = nvl.match(/<Value>(.*?)<\/Value>/);
+      if (nameMatch && valueMatch) {
+        pairs.push({ name: nameMatch[1], value: valueMatch[1] });
+        if (valueMatch[1].trim() === valueToFind.trim()) matchFound = true;
+      }
+    }
+
+    if (matchFound && pairs.length > 0) return pairs;
+  }
+
+  return null;
+}
+
 async function pushEbayUpdate(
   listing: any,
   stock: number | undefined,
@@ -132,8 +181,27 @@ async function pushEbayUpdate(
 
   if (isVariation) {
     if (listing.channel_sku) {
-      return await reviseInventoryStatus(itemId, listing.channel_sku, stock, price, token);
+      try {
+        return await reviseInventoryStatus(itemId, listing.channel_sku, stock, price, token);
+      } catch (err: any) {
+        // eBay item has no custom labels — fall back to VariationSpecifics via GetItem
+        if (
+          err.message?.includes("SKU does not exist") ||
+          err.message?.includes("Non-ManageBySKU")
+        ) {
+          const specifics = await getVariationSpecificsFromEbay(itemId, listing.channel_sku, token);
+          if (specifics && specifics.length > 0) {
+            return await reviseItemVariation(itemId, specifics, stock, price, token);
+          }
+          throw new Error(
+            `eBay item ${itemId} has no custom labels and variation value "${listing.channel_sku}" not found via GetItem`
+          );
+        }
+        throw err;
+      }
     }
+
+    // channel_sku is empty — try channel_variant_id in Name:Value format
     const specificsStr = listing.channel_variant_id.replace(/^\d+_/, "");
     const nameValuePairs = specificsStr.split("_").map((pair: string) => {
       const colonIdx = pair.indexOf(":");
@@ -368,3 +436,4 @@ async function getEbayAccessToken(supabase: any): Promise<string> {
   }
   return json.access_token;
 }
+
