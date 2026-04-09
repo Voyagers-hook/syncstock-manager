@@ -175,46 +175,53 @@ async function pushEbayUpdate(
 
   if (!stock && stock !== 0 && !price) return "nothing to update";
 
-  const isVariation = listing.channel_variant_id &&
-    listing.channel_variant_id !== "" &&
-    !/^\d+$/.test(listing.channel_variant_id);
+  const sku = listing.channel_sku as string | undefined;
+  const cvid = listing.channel_variant_id as string | undefined;
 
-  if (isVariation) {
-    if (listing.channel_sku) {
-      try {
-        return await reviseInventoryStatus(itemId, listing.channel_sku, stock, price, token);
-      } catch (err: any) {
-        // eBay item has no custom labels — fall back to VariationSpecifics via GetItem
-        if (
-          err.message?.includes("SKU does not exist") ||
-          err.message?.includes("Non-ManageBySKU")
-        ) {
-          const specifics = await getVariationSpecificsFromEbay(itemId, listing.channel_sku, token);
-          if (specifics && specifics.length > 0) {
-            return await reviseItemVariation(itemId, specifics, stock, price, token);
-          }
-          throw new Error(
-            `eBay item ${itemId} has no custom labels and variation value "${listing.channel_sku}" not found via GetItem`
-          );
+  // If a SKU is stored, always try it first — works for both ManageBySKU and variation SKUs
+  if (sku) {
+    try {
+      return await reviseInventoryStatus(itemId, sku, stock, price, token);
+    } catch (err: any) {
+      // eBay item has no custom labels — fall back to VariationSpecifics via GetItem
+      if (
+        err.message?.includes("SKU does not exist") ||
+        err.message?.includes("Non-ManageBySKU")
+      ) {
+        const specifics = await getVariationSpecificsFromEbay(itemId, sku, token);
+        if (specifics && specifics.length > 0) {
+          return await reviseItemVariation(itemId, specifics, stock, price, token);
         }
-        throw err;
+        throw new Error(
+          `eBay item ${itemId} has no custom labels and variation value "${sku}" not found via GetItem`
+        );
       }
+      throw err;
     }
+  }
 
-    // channel_sku is empty — try channel_variant_id in Name:Value format
-    const specificsStr = listing.channel_variant_id.replace(/^\d+_/, "");
-    const nameValuePairs = specificsStr.split("_").map((pair: string) => {
+  // No SKU — check if cvid contains Name:Value pairs (e.g. "Colour:Red_Size:M")
+  if (cvid) {
+    // Strip v1|ItemID| prefix if present
+    const stripped = cvid.replace(/^v1\|[^|]+\|/, "").replace(/^\d+_/, "");
+    const nameValuePairs = stripped.split("_").map((pair: string) => {
       const colonIdx = pair.indexOf(":");
       if (colonIdx === -1) return null;
       return { name: pair.substring(0, colonIdx), value: pair.substring(colonIdx + 1) };
-    }).filter(Boolean);
+    }).filter(Boolean) as { name: string; value: string }[];
 
-    if (nameValuePairs.length === 0) {
-      throw new Error(`Cannot identify eBay variation — no SKU set and could not parse channel_variant_id: ${listing.channel_variant_id}`);
+    if (nameValuePairs.length > 0) {
+      return await reviseItemVariation(itemId, nameValuePairs, stock, price, token);
     }
-    return await reviseItemVariation(itemId, nameValuePairs, stock, price, token);
+
+    // Last resort: use cvid raw value to find variation specifics via GetItem
+    const specifics = await getVariationSpecificsFromEbay(itemId, cvid, token);
+    if (specifics && specifics.length > 0) {
+      return await reviseItemVariation(itemId, specifics, stock, price, token);
+    }
   }
 
+  // No variation info at all — single-item listing
   return await reviseInventoryStatus(itemId, null, stock, price, token);
 }
 
