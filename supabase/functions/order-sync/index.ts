@@ -465,9 +465,8 @@ async function pushEbayUpdate(
         if (specifics && specifics.length > 0) {
           return await reviseItemVariation(itemId, specifics, stock, price, token);
         }
-        throw new Error(
-          `eBay item ${itemId} has no custom labels and value "${sku}" not found via GetItem`,
-        );
+        // Single-item listing (no variations) — retry without SKU
+        return await reviseInventoryStatus(itemId, null, stock, price, token);
       }
       throw err;
     }
