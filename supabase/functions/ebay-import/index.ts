@@ -22,12 +22,10 @@ Deno.serve(async (req) => {
     const body = await req.json().catch(() => ({} as Record<string, unknown>));
     const clearFirst = body?.clearFirst === true || body?.mode === "full";
 
-    // ── Get refresh token ─────────────────────────────────────────────────────
     const { data: tokenRow } = await supabase
       .from("sync_secrets").select("value").eq("key", "ebay_refresh_token").single();
     if (!tokenRow?.value) return json({ error: "No eBay refresh token — connect eBay in Settings first" }, 400);
 
-    // ── Refresh access token ──────────────────────────────────────────────────
     const tokenResp = await fetch(`${EBAY}/identity/v1/oauth2/token`, {
       method: "POST",
       headers: {
@@ -48,21 +46,15 @@ Deno.serve(async (req) => {
       await supabase.from("sync_secrets").upsert({ key: "ebay_refresh_token", value: tokenData.refresh_token }, { onConflict: "key" });
     }
 
-    // ── Fetch all eBay listings ───────────────────────────────────────────────
     const items = await fetchAllListings(accessToken);
 
     if (clearFirst) {
-      // ── FULL RESET: Wipe everything and reimport clean ────────────────────
-      // Delete in FK-safe order: channel_listings → inventory → variants → products
       await supabase.from("channel_listings").delete().not("id", "is", null);
       await supabase.from("inventory").delete().not("variant_id", "is", null);
       await supabase.from("variants").delete().not("id", "is", null);
       await supabase.from("products").delete().not("id", "is", null);
 
-      // Fresh import with actual current stock from eBay
       const stats = await fullInsert(supabase, items);
-
-      // Ensure every variant has an inventory row
       const invFixed = await ensureInventoryRows(supabase);
 
       await supabase.from("sync_log").insert({
@@ -75,7 +67,6 @@ Deno.serve(async (req) => {
       return json({ success: true, mode: "full_reset", ...stats, inventory_gaps_fixed: invFixed });
 
     } else {
-      // ── QUICK SYNC: Update prices on existing + import any new listings ───
       const stats = await quickSyncWithNewListings(supabase, items);
 
       await supabase.from("sync_log").insert({
@@ -95,8 +86,6 @@ Deno.serve(async (req) => {
   }
 });
 
-// ─── helpers ─────────────────────────────────────────────────────────────────
-
 function json(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), {
     status, headers: { ...cors, "Content-Type": "application/json" },
@@ -113,11 +102,24 @@ function decodeXml(s: string): string {
 }
 
 function xtag(xml: string, name: string): string | null {
-  const m = xml.match(new RegExp(`<${name}[^>]*>([^<]*)</${name}>`));
+  const m = xml.match(new RegExp(`<${name}[^>]*>([^<]*)<\/${name}>`));
   return m ? decodeXml(m[1].trim()) : null;
 }
 
-// ─── eBay XML types ───────────────────────────────────────────────────────────
+// FIX: Extract ALL NameValueList entries from a variation block and join them.
+// Previously only grabbed the first <Value> tag, which caused some variants to
+// get the wrong name or clash with others, leading to missing imports.
+function parseVariationName(varXml: string): string {
+  const nvMatches = [...varXml.matchAll(/<NameValueList>([\s\S]*?)<\/NameValueList>/g)];
+  if (!nvMatches.length) return "";
+  
+  const parts: string[] = [];
+  for (const [, nvXml] of nvMatches) {
+    const value = xtag(nvXml, "Value");
+    if (value) parts.push(value);
+  }
+  return parts.join(" / ");
+}
 
 type EbayVariation = { sku: string; price: string; name: string; qty: number; sold: number };
 
@@ -130,8 +132,6 @@ type EbayItem = {
   sold: number;
   variations: EbayVariation[];
 };
-
-// ─── fetch all active eBay listings ──────────────────────────────────────────
 
 async function fetchAllListings(token: string): Promise<EbayItem[]> {
   const items: EbayItem[] = [];
@@ -172,7 +172,6 @@ async function fetchAllListings(token: string): Promise<EbayItem[]> {
       const qty = parseInt(xtag(itemXml, "Quantity") ?? "0", 10);
       const sold = parseInt(xtag(itemXml, "QuantitySold") ?? "0", 10);
 
-      // Parse variations
       const variations: EbayVariation[] = [];
       const varMatches = [...itemXml.matchAll(/<Variation>([\s\S]*?)<\/Variation>/g)];
       for (const [, varXml] of varMatches) {
@@ -180,16 +179,14 @@ async function fetchAllListings(token: string): Promise<EbayItem[]> {
         const vPrice = xtag(varXml, "StartPrice") ?? price;
         const vQty = parseInt(xtag(varXml, "Quantity") ?? "0", 10);
         const vSold = parseInt(xtag(varXml, "QuantitySold") ?? "0", 10);
-        // Get variation name from NameValueList
-        const nameMatch = varXml.match(/<Value>([^<]+)<\/Value>/);
-        const vName = nameMatch ? decodeXml(nameMatch[1].trim()) : vSku;
+        // FIX: Use parseVariationName to get ALL name/value pairs, not just the first
+        const vName = parseVariationName(varXml) || vSku;
         variations.push({ sku: vSku, price: vPrice, name: vName, qty: vQty, sold: vSold });
       }
 
       items.push({ itemId, title, sku, price, qty, sold, variations });
     }
 
-    // Check if there are more pages
     const totalPages = parseInt(text.match(/<TotalNumberOfPages>(\d+)<\/TotalNumberOfPages>/)?.[1] ?? "1", 10);
     if (page >= totalPages) break;
     page++;
@@ -198,30 +195,23 @@ async function fetchAllListings(token: string): Promise<EbayItem[]> {
   return items;
 }
 
-// ─── Full Reset: insert everything fresh ─────────────────────────────────────
-
 async function fullInsert(supabase: any, items: EbayItem[]) {
   const now = new Date().toISOString();
   const CHUNK = 50;
 
-  // Pass 1: Insert all unique products — key by itemId (never by sku!)
-  // eBay custom labels (sku) are NOT unique across listings, so we MUST use itemId.
   const productRows = [...new Map(
     items.map(i => [i.itemId, { name: i.title, sku: i.itemId, active: true }])
   ).values()];
 
-  // productByItemId: ebay itemId → DB product uuid
   const productByItemId = new Map<string, string>();
   for (let i = 0; i < productRows.length; i += CHUNK) {
     const { data: inserted } = await supabase
       .from("products")
       .insert(productRows.slice(i, i + CHUNK))
       .select("id, sku");
-    // sku column was set to itemId above
     for (const p of (inserted ?? []) as any[]) productByItemId.set(p.sku, p.id);
   }
 
-  // Pass 2: Insert all variants
   const variantRows: { product_id: string; internal_sku: string; option1: string | null }[] = [];
   for (const item of items) {
     const productId = productByItemId.get(item.itemId);
@@ -236,7 +226,6 @@ async function fullInsert(supabase: any, items: EbayItem[]) {
     }
   }
 
-  // Deduplicate by internal_sku
   const dedupedVarRows = [...new Map(variantRows.map(r => [r.internal_sku, r])).values()];
 
   const variantByISku = new Map<string, string>();
@@ -248,7 +237,6 @@ async function fullInsert(supabase: any, items: EbayItem[]) {
     for (const v of (inserted ?? []) as any[]) variantByISku.set(v.internal_sku, v.id);
   }
 
-  // Pass 3: Insert inventory and channel_listings
   const invRows: { variant_id: string; product_id: string; total_stock: number }[] = [];
   const listRows: any[] = [];
 
@@ -308,55 +296,50 @@ async function fullInsert(supabase: any, items: EbayItem[]) {
   };
 }
 
-// ─── Quick Sync: update prices + import any brand-new listings ────────────────
-// Safe: never touches or duplicates existing merged products.
-// New variations on existing eBay items → added under same product.
-// Completely new eBay items → product name matched first, then created if no match.
-
 async function quickSyncWithNewListings(supabase: any, items: EbayItem[]) {
   const now = new Date().toISOString();
   let updated = 0;
   let created = 0;
 
-  // 1. Load all existing eBay channel_listings with their variant_ids
   const { data: existingListings } = await supabase
     .from("channel_listings")
     .select("id, channel_product_id, channel_variant_id, variant_id")
     .eq("channel", "ebay");
 
-  // Map: "cpid::cvid" → listing id (for price updates)
   const listingMap = new Map<string, string>();
-  // Map: cpid → product_id (so new variations go under the same product)
   const cpidToProductId = new Map<string, string>();
 
   const existingVariantIds = [...new Set(((existingListings ?? []) as any[]).map((l: any) => l.variant_id))];
 
   if (existingVariantIds.length > 0) {
-    const { data: variantRows } = await supabase
-      .from("variants")
-      .select("id, product_id")
-      .in("id", existingVariantIds);
+    const CHUNK = 150;
+    const variantRows: any[] = [];
+    for (let i = 0; i < existingVariantIds.length; i += CHUNK) {
+      const { data } = await supabase
+        .from("variants")
+        .select("id, product_id")
+        .in("id", existingVariantIds.slice(i, i + CHUNK));
+      variantRows.push(...(data ?? []));
+    }
 
     const variantToProduct = new Map<string, string>();
-    for (const v of (variantRows ?? []) as any[]) variantToProduct.set(v.id, v.product_id);
+    for (const v of variantRows) variantToProduct.set(v.id, v.product_id);
 
     for (const l of (existingListings ?? []) as any[]) {
-      listingMap.set(`${l.channel_product_id}::${l.channel_variant_id}`, l.id);
+      listingMap.set(`${l.channel_product_id}::${l.channel_variant_id ?? ""}`, l.id);
       const pid = variantToProduct.get(l.variant_id);
       if (pid) cpidToProductId.set(l.channel_product_id, pid);
     }
   }
 
-  // 2. Load all existing products for name-based dedup
   const { data: allProducts } = await supabase.from("products").select("id, name");
   const productByName = new Map<string, string>();
   for (const p of (allProducts ?? []) as any[]) {
-    // auto name-match removed
+    productByName.set(p.name.toLowerCase().trim(), p.id);
   }
 
-  // 3. Process each eBay item
   const updateBatch: { id: string; channel_price: number; last_synced_at: string }[] = [];
-  // Collect new items to process
+
   type NewEntry = {
     productId: string | null;
     productName: string;
@@ -364,7 +347,7 @@ async function quickSyncWithNewListings(supabase: any, items: EbayItem[]) {
     internalSku: string;
     option1: string | null;
     cpid: string;
-    cvid: string;
+    cvid: string | null;
     channelSku: string;
     price: number;
     stock: number;
@@ -376,6 +359,7 @@ async function quickSyncWithNewListings(supabase: any, items: EbayItem[]) {
 
     if (item.variations.length > 0) {
       for (const v of item.variations) {
+        // FIX: use the correctly parsed variation name (all NameValueList entries)
         const cvid = v.name || v.sku || `${item.itemId}-${v.name}`;
         const key = `${cpid}::${cvid}`;
         const existingId = listingMap.get(key);
@@ -383,8 +367,7 @@ async function quickSyncWithNewListings(supabase: any, items: EbayItem[]) {
         if (existingId) {
           updateBatch.push({ id: existingId, channel_price: parseFloat(v.price), last_synced_at: now });
         } else {
-          // New variation — find product via same eBay item ID, then name, then create
-          const productId = cpidToProductId.get(cpid) ?? null; // No name-matching — user links products manually via Merge page
+          const productId = cpidToProductId.get(cpid) ?? null;
           const iSku = v.sku || `${item.itemId}-${v.name}`;
           newEntries.push({
             productId,
@@ -407,7 +390,7 @@ async function quickSyncWithNewListings(supabase: any, items: EbayItem[]) {
       if (existingId) {
         updateBatch.push({ id: existingId, channel_price: parseFloat(item.price), last_synced_at: now });
       } else {
-        const productId = cpidToProductId.get(cpid) ?? null; // No name-matching — user links products manually via Merge page
+        const productId = cpidToProductId.get(cpid) ?? null;
         newEntries.push({
           productId,
           productName: item.title,
@@ -424,18 +407,14 @@ async function quickSyncWithNewListings(supabase: any, items: EbayItem[]) {
     }
   }
 
-  // 4. Apply price updates — bulk upsert instead of per-row to avoid N+1 slowdown
   if (updateBatch.length > 0) {
     const UPCHUNK = 200;
     for (let ci = 0; ci < updateBatch.length; ci += UPCHUNK) {
-      await supabase.from("channel_listings").upsert(
-        updateBatch.slice(ci, ci + UPCHUNK)
-      );
+      await supabase.from("channel_listings").upsert(updateBatch.slice(ci, ci + UPCHUNK));
     }
     updated = updateBatch.length;
   }
 
-  // 5. Create products for entries that still have no productId
   const needProduct = newEntries.filter(e => !e.productId);
   const uniqueNewProducts = [...new Map(needProduct.map(e => [e.productName, e])).values()];
 
@@ -446,7 +425,6 @@ async function quickSyncWithNewListings(supabase: any, items: EbayItem[]) {
       .single();
     if (inserted) {
       productByName.set(e.productName.toLowerCase().trim(), inserted.id);
-      // Assign to all matching entries
       for (const entry of newEntries) {
         if (!entry.productId && entry.productName === e.productName) {
           entry.productId = inserted.id;
@@ -455,11 +433,9 @@ async function quickSyncWithNewListings(supabase: any, items: EbayItem[]) {
     }
   }
 
-  // 6. Create variants, inventory, channel_listings for each new entry
   for (const e of newEntries) {
     if (!e.productId) continue;
 
-    // Check if variant already exists (avoid duplicate if somehow present)
     const { data: existingVar } = await supabase.from("variants")
       .select("id")
       .eq("product_id", e.productId)
@@ -478,7 +454,6 @@ async function quickSyncWithNewListings(supabase: any, items: EbayItem[]) {
 
     if (!variantId) continue;
 
-    // Upsert inventory (don't overwrite existing stock if variant already had inventory)
     const { data: existingInv } = await supabase.from("inventory")
       .select("id")
       .eq("variant_id", variantId)
@@ -492,7 +467,6 @@ async function quickSyncWithNewListings(supabase: any, items: EbayItem[]) {
       });
     }
 
-    // Insert channel_listing — use insert not upsert (we already verified non-existence above)
     await supabase.from("channel_listings").insert({
       variant_id: variantId,
       channel: "ebay",
@@ -512,32 +486,19 @@ async function quickSyncWithNewListings(supabase: any, items: EbayItem[]) {
   };
 }
 
-// ─── Ensure every variant has at least one inventory row ─────────────────────
-// Runs after import to fill any gaps (stock defaults to 0 for missing rows).
-
 async function ensureInventoryRows(supabase: any): Promise<number> {
   const CHUNK = 500;
   let fixed = 0;
 
-  // Fetch all variants
-  const { data: allVariants } = await supabase
-    .from("variants")
-    .select("id, product_id");
-
+  const { data: allVariants } = await supabase.from("variants").select("id, product_id");
   if (!allVariants?.length) return 0;
 
-  // Fetch all existing inventory variant_ids
-  const { data: allInv } = await supabase
-    .from("inventory")
-    .select("variant_id");
-
+  const { data: allInv } = await supabase.from("inventory").select("variant_id");
   const existingVariantIds = new Set<string>((allInv ?? []).map((i: any) => i.variant_id));
 
-  // Find variants with no inventory row
   const missing = (allVariants as any[]).filter((v: any) => !existingVariantIds.has(v.id));
   if (missing.length === 0) return 0;
 
-  // Insert inventory rows in chunks
   for (let i = 0; i < missing.length; i += CHUNK) {
     const chunk = missing.slice(i, i + CHUNK).map((v: any) => ({
       variant_id: v.id,
@@ -550,4 +511,3 @@ async function ensureInventoryRows(supabase: any): Promise<number> {
 
   return fixed;
 }
-
