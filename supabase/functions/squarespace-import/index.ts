@@ -394,7 +394,7 @@ async function upsertProducts(supabase: any, squarespaceProducts: SqProduct[]) {
     const insertPayloads = batchListingInserts.map(b => b.payload);
     for (let ci = 0; ci < insertPayloads.length; ci += LCHUNK) {
       const { data: inserted } = await supabase.from("channel_listings")
-        .upsert(insertPayloads.slice(ci, ci + LCHUNK), { onConflict: "channel,channel_variant_id" })
+        .insert(insertPayloads.slice(ci, ci + LCHUNK))
         .select("id, variant_id, channel_variant_id");
       for (const row of (inserted ?? [])) {
         listingByExternalVariantId.set(row.channel_variant_id, {
