@@ -415,9 +415,9 @@ async function quickSyncWithNewListings(supabase: any, items: EbayItem[]) {
           internalSku: item.itemId,
           option1: null,
           cpid,
-          cvid: "",
-          channelSku: item.sku,
-          price: parseFloat(item.price),
+          cvid: null,
+          channelSku: item.sku || item.itemId,
+          price: parseFloat(item.price) || 0,
           stock: Math.max(0, item.qty - item.sold),
         });
       }
@@ -492,16 +492,16 @@ async function quickSyncWithNewListings(supabase: any, items: EbayItem[]) {
       });
     }
 
-    // Insert channel_listing (skip if somehow already there due to race)
-    await supabase.from("channel_listings").upsert({
+    // Insert channel_listing — use insert not upsert (we already verified non-existence above)
+    await supabase.from("channel_listings").insert({
       variant_id: variantId,
       channel: "ebay",
       channel_sku: e.channelSku,
       channel_price: e.price,
       channel_product_id: e.cpid,
-      channel_variant_id: e.cvid,
+      channel_variant_id: e.cvid ?? null,
       last_synced_at: now,
-    }, { onConflict: "channel,channel_variant_id" });
+    });
 
     created++;
   }
