@@ -306,7 +306,12 @@ async function quickSyncWithNewListings(supabase: any, items: EbayItem[]) {
     .select("id, channel_product_id, channel_variant_id, variant_id")
     .eq("channel", "ebay");
 
-  const listingMap = new Map<string, string>();
+  // Match existing listings by internal variant_id — this is the stable key set by merges.
+  // We also keep a channel_variant_id lookup for brand new listings that haven't been merged yet.
+  // This means: if you merge a variant, the import will ALWAYS find it by variant_id
+  // regardless of whether eBay changes the variation name format.
+  const listingByVariantId = new Map<string, string>();   // cpid::variant_id -> listing id
+  const listingByCvid = new Map<string, string>();         // cpid::cvid -> listing id
   const cpidToProductId = new Map<string, string>();
 
   const existingVariantIds = [...new Set(((existingListings ?? []) as any[]).map((l: any) => l.variant_id))];
@@ -326,7 +331,9 @@ async function quickSyncWithNewListings(supabase: any, items: EbayItem[]) {
     for (const v of variantRows) variantToProduct.set(v.id, v.product_id);
 
     for (const l of (existingListings ?? []) as any[]) {
-      listingMap.set(`${l.channel_product_id}::${l.channel_variant_id ?? ""}`, l.id);
+      const cvid = l.channel_variant_id ?? "";
+      listingByVariantId.set(`${l.channel_product_id}::${l.variant_id}`, l.id);
+      listingByCvid.set(`${l.channel_product_id}::${cvid}`, l.id);
       const pid = variantToProduct.get(l.variant_id);
       if (pid) cpidToProductId.set(l.channel_product_id, pid);
     }
@@ -354,21 +361,44 @@ async function quickSyncWithNewListings(supabase: any, items: EbayItem[]) {
   };
   const newEntries: NewEntry[] = [];
 
+  // Load existing variants so we can look up variant_id by internal_sku for matching
+  const { data: existingVariants } = await supabase
+    .from("variants")
+    .select("id, product_id, internal_sku, option1");
+
+  const variantByProductAndSku = new Map<string, string>();
+  const variantByProductAndOption = new Map<string, string>();
+  for (const v of (existingVariants ?? []) as any[]) {
+    if (v.internal_sku) variantByProductAndSku.set(`${v.product_id}:${v.internal_sku}`, v.id);
+    if (v.option1) variantByProductAndOption.set(`${v.product_id}:${v.option1}`, v.id);
+  }
+
   for (const item of items) {
     const cpid = `v1|${item.itemId}|0`;
 
     if (item.variations.length > 0) {
       for (const v of item.variations) {
-        // FIX: use the correctly parsed variation name (all NameValueList entries)
         const cvid = v.name || v.sku || `${item.itemId}-${v.name}`;
-        const key = `${cpid}::${cvid}`;
-        const existingId = listingMap.get(key);
+        const iSku = v.sku || `${item.itemId}-${v.name}`;
+
+        // Try to find existing listing:
+        // 1. By cpid + internal_sku (most reliable — survives name format changes)
+        // 2. By cpid + channel_variant_id (for unmerged listings)
+        const productId = cpidToProductId.get(cpid) ?? null;
+        let existingId: string | undefined;
+
+        if (productId) {
+          const variantId = variantByProductAndSku.get(`${productId}:${iSku}`)
+            ?? variantByProductAndOption.get(`${productId}:${v.name}`);
+          if (variantId) {
+            existingId = listingByVariantId.get(`${cpid}::${variantId}`);
+          }
+        }
+        if (!existingId) existingId = listingByCvid.get(`${cpid}::${cvid}`);
 
         if (existingId) {
           updateBatch.push({ id: existingId, channel_price: parseFloat(v.price), last_synced_at: now });
         } else {
-          const productId = cpidToProductId.get(cpid) ?? null;
-          const iSku = v.sku || `${item.itemId}-${v.name}`;
           newEntries.push({
             productId,
             productName: item.title,
@@ -384,8 +414,7 @@ async function quickSyncWithNewListings(supabase: any, items: EbayItem[]) {
         }
       }
     } else {
-      const key = `${cpid}::`;
-      const existingId = listingMap.get(key);
+      const existingId = listingByCvid.get(`${cpid}::`);
 
       if (existingId) {
         updateBatch.push({ id: existingId, channel_price: parseFloat(item.price), last_synced_at: now });
