@@ -19,12 +19,10 @@ Deno.serve(async (req) => {
   const ebayAppId  = Deno.env.get("EBAY_APP_ID");
   const ebayCertId = Deno.env.get("EBAY_CERT_ID");
 
-  // Read Squarespace API key from DB (env var fallback)
   const { data: sqKeyRow } = await supabase
     .from("sync_secrets").select("value").eq("key", "squarespace_api_key").maybeSingle();
   const sqApiKey = sqKeyRow?.value ?? Deno.env.get("SQUARESPACE_API_KEY");
 
-  // ── time window ─────────────────────────────────────────────────────
   const { data: lastSyncRow } = await supabase
     .from("sync_secrets")
     .select("value")
@@ -33,7 +31,7 @@ Deno.serve(async (req) => {
 
   const since = lastSyncRow?.value
     ? new Date(lastSyncRow.value)
-    : new Date(Date.now() - 24 * 60 * 60 * 1000);   // first run: last 24 h
+    : new Date(Date.now() - 24 * 60 * 60 * 1000);
 
   const now = new Date();
 
@@ -42,7 +40,6 @@ Deno.serve(async (req) => {
   const errors: string[] = [];
 
   try {
-    // ── eBay orders ───────────────────────────────────────────────────
     if (ebayAppId && ebayCertId) {
       try {
         const { data: tokenRow } = await supabase
@@ -63,7 +60,6 @@ Deno.serve(async (req) => {
       }
     }
 
-    // ── Squarespace orders ────────────────────────────────────────────
     if (sqApiKey) {
       try {
         const sqOrders = await fetchSquarespaceOrders(sqApiKey, since);
@@ -84,7 +80,6 @@ Deno.serve(async (req) => {
       errors.push("Squarespace API key not found in sync_secrets or env");
     }
 
-    // ── bookkeeping ───────────────────────────────────────────────────
     await supabase.from("sync_secrets").upsert(
       { key: "last_order_sync", value: now.toISOString(), updated_at: now.toISOString() },
       { onConflict: "key" },
@@ -107,8 +102,6 @@ Deno.serve(async (req) => {
   }
 });
 
-/* ═══════════════════════════ helpers ═══════════════════════════ */
-
 function json(data: unknown, status = 200) {
   return new Response(JSON.stringify(data), {
     status,
@@ -120,8 +113,6 @@ function extractTag(xml: string, tag: string): string | null {
   const m = xml.match(new RegExp(`<${tag}[^>]*>([^<]*)</${tag}>`));
   return m ? m[1].trim() : null;
 }
-
-/* ═══════════════════════════ eBay auth ════════════════════════= */
 
 async function getEbayAccessToken(appId: string, certId: string, refreshToken: string, supabase: any) {
   const creds = btoa(`${appId}:${certId}`);
@@ -148,8 +139,6 @@ async function getEbayAccessToken(appId: string, certId: string, refreshToken: s
   }
   return data.access_token as string;
 }
-
-/* ═══════════════════════════ eBay orders ═══════════════════════ */
 
 interface EbayTxn {
   orderId: string;
@@ -231,8 +220,6 @@ function parseEbayOrders(xml: string): EbayTxn[] {
   return txns;
 }
 
-/* ═══════════════════════════ Squarespace orders ════════════════ */
-
 interface SqOrder {
   id: string;
   orderNumber: string;
@@ -248,8 +235,6 @@ interface SqLineItem {
   productName: string;
 }
 
-// FIXED: Squarespace requires BOTH modifiedAfter AND modifiedBefore together.
-// Cursor cannot be combined with date params — pagination uses cursor alone.
 async function fetchSquarespaceOrders(apiKey: string, since: Date): Promise<SqOrder[]> {
   const all: SqOrder[] = [];
   const until = new Date();
@@ -273,16 +258,12 @@ async function fetchSquarespaceOrders(apiKey: string, since: Date): Promise<SqOr
   return all;
 }
 
-/* ═══════════════════════════ stock adjustment ══════════════════ */
-
 async function processEbayTransaction(supabase: any, txn: EbayTxn, sqApiKey?: string): Promise<boolean> {
-  // deduplicate
   const { data: dup } = await supabase.from("orders").select("id")
     .eq("platform", "ebay").eq("platform_order_id", txn.orderId)
     .eq("sku", txn.variationSku ?? txn.itemId).maybeSingle();
   if (dup) return false;
 
-  // find listing
   const cpid = `v1|${txn.itemId}|0`;
   const { data: listings } = await supabase.from("channel_listings")
     .select("*").eq("channel", "ebay").eq("channel_product_id", cpid);
@@ -304,10 +285,9 @@ async function processEbayTransaction(supabase: any, txn: EbayTxn, sqApiKey?: st
   const newStock = Math.max(0, (inv.total_stock ?? 0) - txn.quantity);
   await supabase.from("inventory").update({ total_stock: newStock }).eq("id", inv.id);
 
-  // push to Squarespace
+  // Push new stock to Squarespace to keep it in sync with the DB.
   if (sqApiKey) await pushStockToSquarespace(supabase, listing.variant_id, newStock, sqApiKey);
 
-  // record
   await supabase.from("orders").insert({
     platform: "ebay", platform_order_id: txn.orderId,
     product_id: inv.product_id, sku: txn.variationSku ?? txn.itemId,
@@ -341,7 +321,7 @@ async function processSquarespaceLineItem(
   const newStock = Math.max(0, (inv.total_stock ?? 0) - li.quantity);
   await supabase.from("inventory").update({ total_stock: newStock }).eq("id", inv.id);
 
-  // push to eBay
+  // Push new stock to eBay.
   if (ebayAppId && ebayCertId) {
     try {
       const { data: tokenRow } = await supabase.from("sync_secrets").select("value").eq("key", "ebay_refresh_token").single();
@@ -349,12 +329,17 @@ async function processSquarespaceLineItem(
         const token = await getEbayAccessToken(ebayAppId, ebayCertId, tokenRow.value, supabase);
         await pushStockToEbay(supabase, listing.variant_id, newStock, token);
       }
-    } catch (_) { /* logged elsewhere */ }
+    } catch (_) { /* non-fatal */ }
   }
 
-  // NOTE: Do NOT push stock back to Squarespace here.
-  // Squarespace already decremented its own stock when the customer placed the order.
-  // Pushing again would double-decrement Squarespace stock.
+  // Push new stock to Squarespace to keep it in sync with the DB.
+  // The DB is the single source of truth. After a stocktake sets DB stock to N,
+  // that value must be pushed to Squarespace on every sale so both stay in sync.
+  if (sqApiKey) {
+    try {
+      await pushStockToSquarespace(supabase, listing.variant_id, newStock, sqApiKey);
+    } catch (_) { /* non-fatal */ }
+  }
 
   await supabase.from("orders").insert({
     platform: "squarespace", platform_order_id: order.id,
@@ -369,8 +354,6 @@ async function processSquarespaceLineItem(
   });
   return true;
 }
-
-/* ═══════════════════════════ push helpers ══════════════════════ */
 
 async function pushStockToSquarespace(supabase: any, variantId: string, stock: number, apiKey: string) {
   const { data: listings } = await supabase.from("channel_listings")
