@@ -8,15 +8,6 @@ const corsHeaders = {
 const EBAY_API_BASE = "https://api.ebay.com";
 const SQ_API_BASE   = "https://api.squarespace.com/1.0";
 
-// XML-escape a string so it can be safely inserted into XML templates
-function xmlEscape(s: string): string {
-  return s.replace(/&/g, "&amp;")
-           .replace(/</g, "&lt;")
-           .replace(/>/g, "&gt;")
-           .replace(/"/g, "&quot;")
-           .replace(/'/g, "&apos;");
-}
-
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return new Response("ok", { headers: corsHeaders });
 
@@ -61,7 +52,7 @@ Deno.serve(async (req) => {
           const ebayOrders = await fetchEbayOrders(ebayToken, since, now);
           for (const txn of ebayOrders) {
             try {
-              if (await processEbayTransaction(supabase, txn, sqApiKey, ebayToken)) ebayProcessed++;
+              if (await processEbayTransaction(supabase, txn, sqApiKey)) ebayProcessed++;
             } catch (err: any) {
               errors.push(`eBay ${txn.orderId}/${txn.itemId}: ${err.message}`);
             }
@@ -267,7 +258,7 @@ async function fetchSquarespaceOrders(apiKey: string, since: Date): Promise<SqOr
   while (true) {
     const params = cursor
       ? `cursor=${cursor}`
-      : `modifiedAfter=${encodeURIComponent(since.toISOString())}&modifiedBefore=${encodeURIComponent(until.toISOString())}`;
+      : `modifiedAfter=${since.toISOString()}&modifiedBefore=${until.toISOString()}`;
 
     const resp = await fetch(`${SQ_API_BASE}/commerce/orders?${params}`, {
       headers: { Authorization: `Bearer ${apiKey}`, "User-Agent": "SyncStock/1.0" },
@@ -284,26 +275,17 @@ async function fetchSquarespaceOrders(apiKey: string, since: Date): Promise<SqOr
 
 /* ═══════════════════════════ stock adjustment ══════════════════ */
 
-async function processEbayTransaction(
-  supabase: any, txn: EbayTxn, sqApiKey?: string, ebayToken?: string
-): Promise<boolean> {
+async function processEbayTransaction(supabase: any, txn: EbayTxn, sqApiKey?: string): Promise<boolean> {
   // deduplicate
   const { data: dup } = await supabase.from("orders").select("id")
     .eq("platform", "ebay").eq("platform_order_id", txn.orderId)
     .eq("sku", txn.variationSku ?? txn.itemId).maybeSingle();
   if (dup) return false;
 
-  // find listing — try v1|itemId|0 format first, then plain itemId
+  // find listing
   const cpid = `v1|${txn.itemId}|0`;
-  let { data: listings } = await supabase.from("channel_listings")
+  const { data: listings } = await supabase.from("channel_listings")
     .select("*").eq("channel", "ebay").eq("channel_product_id", cpid);
-  
-  // fallback: some listings may store just the itemId
-  if (!listings?.length) {
-    const { data: listings2 } = await supabase.from("channel_listings")
-      .select("*").eq("channel", "ebay").like("channel_product_id", `%${txn.itemId}%`);
-    listings = listings2;
-  }
   if (!listings?.length) return false;
 
   let listing = listings[0];
@@ -359,7 +341,7 @@ async function processSquarespaceLineItem(
   const newStock = Math.max(0, (inv.total_stock ?? 0) - li.quantity);
   await supabase.from("inventory").update({ total_stock: newStock }).eq("id", inv.id);
 
-  // push to eBay (full fallback logic — same as push-stock function)
+  // push to eBay
   if (ebayAppId && ebayCertId) {
     try {
       const { data: tokenRow } = await supabase.from("sync_secrets").select("value").eq("key", "ebay_refresh_token").single();
@@ -367,18 +349,12 @@ async function processSquarespaceLineItem(
         const token = await getEbayAccessToken(ebayAppId, ebayCertId, tokenRow.value, supabase);
         await pushStockToEbay(supabase, listing.variant_id, newStock, token);
       }
-    } catch (err: any) {
-      // Log but don't block the order record — eBay push failure is non-fatal for SQ orders
-      console.error(`eBay stock push failed for variant ${listing.variant_id}: ${err.message}`);
-    }
+    } catch (_) { /* logged elsewhere */ }
   }
 
-  // push back to Squarespace too (keeps SQ in sync with DB)
-  if (sqApiKey) {
-    try {
-      await pushStockToSquarespace(supabase, listing.variant_id, newStock, sqApiKey);
-    } catch (_) { /* non-fatal */ }
-  }
+  // NOTE: Do NOT push stock back to Squarespace here.
+  // Squarespace already decremented its own stock when the customer placed the order.
+  // Pushing again would double-decrement Squarespace stock.
 
   await supabase.from("orders").insert({
     platform: "squarespace", platform_order_id: order.id,
@@ -418,226 +394,29 @@ async function pushStockToSquarespace(supabase: any, variantId: string, stock: n
   }
 }
 
-// ── Full eBay push with VariationSpecifics fallback ───────────────────────────
-// Mirrors push-stock/index.ts exactly so both paths use identical logic.
-
 async function pushStockToEbay(supabase: any, variantId: string, stock: number, token: string) {
   const { data: listings } = await supabase.from("channel_listings")
-    .select("channel_product_id, channel_sku, channel_variant_id")
-    .eq("variant_id", variantId).eq("channel", "ebay");
-
+    .select("channel_product_id, channel_sku").eq("variant_id", variantId).eq("channel", "ebay");
   for (const l of listings ?? []) {
-    try {
-      await pushEbayUpdate(l, stock, undefined, token);
-    } catch (err: any) {
-      // Surface the error so it appears in order_sync logs rather than silently failing
-      throw new Error(`eBay push failed for item ${l.channel_product_id}: ${err.message}`);
-    }
-  }
-}
-
-async function pushEbayUpdate(
-  listing: any,
-  stock: number | undefined,
-  price: number | undefined,
-  token: string,
-): Promise<string> {
-  const itemId = listing.channel_product_id?.replace(/^v1\|/, "").replace(/\|.*$/, "") ||
-    listing.channel_product_id;
-  if (!itemId) throw new Error("Missing eBay item ID");
-
-  if (stock === undefined && price === undefined) return "nothing to update";
-
-  const sku  = listing.channel_sku as string | undefined;
-  const cvid = listing.channel_variant_id as string | undefined;
-
-  // 1. Try SKU-based ReviseInventoryStatus first
-  if (sku) {
-    try {
-      return await reviseInventoryStatus(itemId, sku, stock, price, token);
-    } catch (err: any) {
-      // eBay item has no custom labels — fall back to VariationSpecifics
-      if (
-        err.message?.includes("SKU does not exist") ||
-        err.message?.includes("Non-ManageBySKU")
-      ) {
-        const specifics = await getVariationSpecificsFromEbay(itemId, sku, token);
-        if (specifics && specifics.length > 0) {
-          return await reviseItemVariation(itemId, specifics, stock, price, token);
-        }
-        // Single-item listing (no variations) — retry without SKU
-        return await reviseInventoryStatus(itemId, null, stock, price, token);
-      }
-      throw err;
-    }
-  }
-
-  // 2. No SKU — try parsing channel_variant_id as "Name:Value_Name:Value" pairs
-  if (cvid) {
-    const stripped = cvid.replace(/^v1\|[^|]+\|/, "").replace(/^\d+_/, "");
-    const nameValuePairs = stripped.split("_").map((pair: string) => {
-      const colonIdx = pair.indexOf(":");
-      if (colonIdx === -1) return null;
-      return { name: pair.substring(0, colonIdx), value: pair.substring(colonIdx + 1) };
-    }).filter(Boolean) as { name: string; value: string }[];
-
-    if (nameValuePairs.length > 0) {
-      return await reviseItemVariation(itemId, nameValuePairs, stock, price, token);
-    }
-
-    // 3. Last resort: GetItem to find variation specifics by matching cvid value
-    const specifics = await getVariationSpecificsFromEbay(itemId, cvid, token);
-    if (specifics && specifics.length > 0) {
-      return await reviseItemVariation(itemId, specifics, stock, price, token);
-    }
-  }
-
-  // 4. Single-item listing (no variation info)
-  return await reviseInventoryStatus(itemId, null, stock, price, token);
-}
-
-async function getVariationSpecificsFromEbay(
-  itemId: string,
-  valueToFind: string,
-  token: string,
-): Promise<{ name: string; value: string }[] | null> {
-  const xml = `<?xml version="1.0" encoding="utf-8"?>
-<GetItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">
-  <RequesterCredentials><eBayAuthToken>${token}</eBayAuthToken></RequesterCredentials>
-  <ItemID>${itemId}</ItemID>
-  <DetailLevel>ReturnAll</DetailLevel>
-</GetItemRequest>`;
-
-  const resp = await fetch(`${EBAY_API_BASE}/ws/api.dll`, {
-    method: "POST",
-    headers: {
-      "X-EBAY-API-CALL-NAME": "GetItem",
-      "X-EBAY-API-SITEID": "3",
-      "X-EBAY-API-COMPATIBILITY-LEVEL": "1451",
-      "X-EBAY-API-APP-NAME": Deno.env.get("EBAY_APP_ID") ?? "",
-      "Content-Type": "text/xml",
-    },
-    body: xml,
-  });
-
-  const text = await resp.text();
-  const varMatches = [...text.matchAll(/<Variation>([\s\S]*?)<\/Variation>/g)];
-
-  for (const [, varXml] of varMatches) {
-    const nvlists = [...varXml.matchAll(/<NameValueList>([\s\S]*?)<\/NameValueList>/g)];
-    const pairs: { name: string; value: string }[] = [];
-    let matchFound = false;
-
-    for (const [, nvl] of nvlists) {
-      const nameMatch = nvl.match(/<Name>(.*?)<\/Name>/);
-      const valueMatch = nvl.match(/<Value>(.*?)<\/Value>/);
-      if (nameMatch && valueMatch) {
-        pairs.push({ name: nameMatch[1], value: valueMatch[1] });
-        if (valueMatch[1].trim() === valueToFind.trim()) matchFound = true;
-      }
-    }
-
-    if (matchFound && pairs.length > 0) return pairs;
-  }
-
-  return null;
-}
-
-async function reviseInventoryStatus(
-  itemId: string,
-  sku: string | null,
-  stock: number | undefined,
-  price: number | undefined,
-  token: string,
-): Promise<string> {
-  const priceXml = price !== undefined ? `<StartPrice>${price.toFixed(2)}</StartPrice>` : "";
-  const stockXml = stock !== undefined ? `<Quantity>${stock}</Quantity>` : "";
-  if (!priceXml && !stockXml) return "nothing to update";
-
-  const xml = `<?xml version="1.0" encoding="utf-8"?>
+    const itemId = l.channel_product_id?.match(/(\d+)/)?.[1] ?? l.channel_product_id;
+    const xml = `<?xml version="1.0" encoding="utf-8"?>
 <ReviseInventoryStatusRequest xmlns="urn:ebay:apis:eBLBaseComponents">
-  <RequesterCredentials>
-    <eBayAuthToken>${token}</eBayAuthToken>
-  </RequesterCredentials>
+  <RequesterCredentials><eBayAuthToken>${token}</eBayAuthToken></RequesterCredentials>
   <InventoryStatus>
     <ItemID>${itemId}</ItemID>
-    ${sku ? `<SKU>${xmlEscape(sku)}</SKU>` : ""}
-    ${stockXml}
-    ${priceXml}
+    ${l.channel_sku ? `<SKU>${l.channel_sku}</SKU>` : ""}
+    <Quantity>${stock}</Quantity>
   </InventoryStatus>
 </ReviseInventoryStatusRequest>`;
-
-  const resp = await fetch(`${EBAY_API_BASE}/ws/api.dll`, {
-    method: "POST",
-    headers: {
-      "X-EBAY-API-CALL-NAME": "ReviseInventoryStatus",
-      "X-EBAY-API-SITEID": "3",
-      "X-EBAY-API-COMPATIBILITY-LEVEL": "1451",
-      "X-EBAY-API-APP-NAME": Deno.env.get("EBAY_APP_ID") ?? "",
-      "Content-Type": "text/xml",
-    },
-    body: xml,
-  });
-
-  const respText = await resp.text();
-  if (respText.includes("<Ack>Failure</Ack>") || respText.includes("<Ack>PartialFailure</Ack>")) {
-    const errMatch = respText.match(/<LongMessage>(.*?)<\/LongMessage>/);
-    throw new Error(errMatch ? errMatch[1] : "eBay ReviseInventoryStatus returned Failure");
+    await fetch(`${EBAY_API_BASE}/ws/api.dll`, {
+      method: "POST",
+      headers: {
+        "X-EBAY-API-CALL-NAME": "ReviseInventoryStatus",
+        "X-EBAY-API-SITEID": "3",
+        "X-EBAY-API-COMPATIBILITY-LEVEL": "1451",
+        "Content-Type": "text/xml",
+      },
+      body: xml,
+    });
   }
-  return "ok";
-}
-
-async function reviseItemVariation(
-  itemId: string,
-  nameValuePairs: { name: string; value: string }[],
-  stock: number | undefined,
-  price: number | undefined,
-  token: string,
-): Promise<string> {
-  const specificsXml = nameValuePairs.map(({ name, value }: { name: string; value: string }) => `
-      <NameValueList>
-        <Name>${xmlEscape(name)}</Name>
-        <Value>${xmlEscape(value)}</Value>
-      </NameValueList>`).join("");
-
-  const priceXml = price !== undefined ? `<StartPrice>${price.toFixed(2)}</StartPrice>` : "";
-  const stockXml = stock !== undefined ? `<Quantity>${stock}</Quantity>` : "";
-  if (!priceXml && !stockXml) return "nothing to update";
-
-  const xml = `<?xml version="1.0" encoding="utf-8"?>
-<ReviseItemRequest xmlns="urn:ebay:apis:eBLBaseComponents">
-  <RequesterCredentials>
-    <eBayAuthToken>${token}</eBayAuthToken>
-  </RequesterCredentials>
-  <Item>
-    <ItemID>${itemId}</ItemID>
-    <Variations>
-      <Variation>
-        <VariationSpecifics>${specificsXml}
-        </VariationSpecifics>
-        ${stockXml}
-        ${priceXml}
-      </Variation>
-    </Variations>
-  </Item>
-</ReviseItemRequest>`;
-
-  const resp = await fetch(`${EBAY_API_BASE}/ws/api.dll`, {
-    method: "POST",
-    headers: {
-      "X-EBAY-API-CALL-NAME": "ReviseItem",
-      "X-EBAY-API-SITEID": "3",
-      "X-EBAY-API-COMPATIBILITY-LEVEL": "1451",
-      "X-EBAY-API-APP-NAME": Deno.env.get("EBAY_APP_ID") ?? "",
-      "Content-Type": "text/xml",
-    },
-    body: xml,
-  });
-
-  const respText = await resp.text();
-  if (respText.includes("<Ack>Failure</Ack>") || respText.includes("<Ack>PartialFailure</Ack>")) {
-    const errMatch = respText.match(/<LongMessage>(.*?)<\/LongMessage>/);
-    throw new Error(errMatch ? errMatch[1] : "eBay ReviseItem returned Failure");
-  }
-  return "ok (via VariationSpecifics)";
 }
