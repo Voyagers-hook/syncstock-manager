@@ -122,6 +122,17 @@ const ProductTable = () => {
     return { ebay: ebayMargin, sqsp: sqspMargin };
   };
 
+  // Per-item margin: uses that single item's own cost and its own selling price.
+  const marginFor = (
+    cost: number | null | undefined,
+    sell: number | null | undefined,
+    channel: "ebay" | "squarespace"
+  ): number | null => {
+    if (!cost || cost <= 0 || !sell || sell <= 0) return null;
+    const fees = channel === "ebay" ? (sell * 0.109 + 0.30 + 0.03) * 1.20 : sell * 0.055;
+    return ((sell - cost - fees) / sell) * 100;
+  };
+
   const formatMargin = (margin: number | null) => {
     if (margin === null) return "—";
     const color = margin < 10 ? "text-destructive" : margin < 20 ? "text-warning-foreground" : "text-success";
@@ -238,15 +249,22 @@ const ProductTable = () => {
                       />
                     </td>
                     <td className="px-5 py-3.5 text-right">
-                      <InlineEditCell
-                        value={product.cost_price}
-                        prefix="£"
-                        className="text-muted-foreground"
-                        onSave={(v) => updateProduct.mutate({ productId: product.id, variantId: product.variants[0]?.id, updates: { cost_price: v } })}
-                      />
+                      {product.variants.length === 1 ? (
+                        <InlineEditCell
+                          value={product.variants[0].cost_price ?? null}
+                          prefix="£"
+                          className="text-muted-foreground"
+                          onSave={(v) => updateVariantCost.mutate(
+                            { variantId: product.variants[0].id, cost: v },
+                            { onSuccess: () => toast.success(`Cost set to £${v.toFixed(2)}`), onError: () => toast.error("Failed to save cost") }
+                          )}
+                        />
+                      ) : (
+                        <span className="text-xs text-muted-foreground" title="Set cost per item — expand the row">—</span>
+                      )}
                     </td>
-                    <td className="px-5 py-3.5 text-right">{formatMargin(ebayMargin)}</td>
-                    <td className="px-5 py-3.5 text-right">{formatMargin(sqspMargin)}</td>
+                    <td className="px-5 py-3.5 text-right">{product.variants.length === 1 ? formatMargin(ebayMargin) : <span className="text-xs text-muted-foreground">—</span>}</td>
+                    <td className="px-5 py-3.5 text-right">{product.variants.length === 1 ? formatMargin(sqspMargin) : <span className="text-xs text-muted-foreground">—</span>}</td>
                     <td className="px-5 py-3.5 text-center">{getStockBadge(product.total_stock)}</td>
                     <td className="px-2 py-3.5 text-center">
                       <button
@@ -272,6 +290,8 @@ const ProductTable = () => {
                               <th className="text-right px-3 py-1">Sqsp Sale</th>
                               <th className="text-center px-3 py-1">On Sale?</th>
                               <th className="text-right px-3 py-1">Cost</th>
+                              <th className="text-right px-3 py-1">eBay %</th>
+                              <th className="text-right px-3 py-1">Sqsp %</th>
                             </tr>
                           </thead>
                           <tbody>
@@ -419,6 +439,12 @@ const ProductTable = () => {
                                         }
                                       )}
                                     />
+                                  </td>
+                                  <td className="px-3 py-2 text-right">
+                                    {formatMargin(marginFor(v.cost_price, vEbay?.channel_price ?? null, "ebay"))}
+                                  </td>
+                                  <td className="px-3 py-2 text-right">
+                                    {formatMargin(marginFor(v.cost_price, vSqsp ? ((vSqsp.sq_on_sale ? (vSqsp.sq_sale_price ?? vSqsp.sq_base_price) : vSqsp.sq_base_price) ?? vSqsp.channel_price) : null, "squarespace"))}
                                   </td>
                                 </tr>
                               );
