@@ -18,6 +18,7 @@ export interface Variant {
   internal_sku: string | null;
   option1: string | null;
   option2: string | null;
+  cost_price: number | null;
   needs_sync: boolean;
   created_at: string;
   updated_at: string;

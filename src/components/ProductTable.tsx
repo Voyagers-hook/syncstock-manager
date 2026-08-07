@@ -2,7 +2,7 @@ import { useState, useMemo } from "react";
 import { ChevronDown, ChevronRight, Loader2, Search, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
-import { useProducts, useUpdateProduct, useUpdateChannelPrice, useUpdateInventory, useCreateInventory, useDeleteProduct } from "@/hooks/use-products";
+import { useProducts, useUpdateProduct, useUpdateChannelPrice, useUpdateInventory, useCreateInventory, useDeleteProduct, useUpdateVariantCost, useClearSalePrice } from "@/hooks/use-products";
 import type { ProductWithDetails } from "@/lib/types";
 import { toast } from "sonner";
 import InlineEditCell from "./InlineEditCell";
@@ -26,6 +26,8 @@ const ProductTable = () => {
   const updateInventory = useUpdateInventory();
   const deleteProduct = useDeleteProduct();
   const createInventory = useCreateInventory();
+  const updateVariantCost = useUpdateVariantCost();
+  const clearSalePrice = useClearSalePrice();
 
   const handleDelete = (p: ProductWithDetails) => {
     if (!confirm(`Delete "${p.name}"? This cannot be undone.`)) return;
@@ -263,6 +265,7 @@ const ProductTable = () => {
                               <th className="text-right px-3 py-1">Sqsp Base</th>
                               <th className="text-right px-3 py-1">Sqsp Sale</th>
                               <th className="text-center px-3 py-1">On Sale?</th>
+                              <th className="text-right px-3 py-1">Cost</th>
                             </tr>
                           </thead>
                           <tbody>
@@ -355,6 +358,7 @@ const ProductTable = () => {
                                       <InlineEditCell
                                         value={vSqsp.sq_sale_price}
                                         prefix="£"
+                                        placeholder="—"
                                         onSave={(val) => updateChannelPrice.mutate({
                                           listingId: vSqsp.id,
                                           variantId: v.id,
@@ -362,6 +366,13 @@ const ProductTable = () => {
                                           channel: "squarespace",
                                           priceType: "sale"
                                         })}
+                                        onClear={() => clearSalePrice.mutate(
+                                          { listingId: vSqsp.id },
+                                          {
+                                            onSuccess: () => toast.success("Sale price removed"),
+                                            onError: () => toast.error("Failed to remove sale price"),
+                                          }
+                                        )}
                                       />
                                     ) : (
                                       <span className="text-xs text-muted-foreground">—</span>
@@ -387,6 +398,21 @@ const ProductTable = () => {
                                     ) : (
                                       <span className="text-xs text-muted-foreground">—</span>
                                     )}
+                                  </td>
+                                  <td className="px-3 py-2 text-right">
+                                    <InlineEditCell
+                                      value={v.cost_price ?? null}
+                                      prefix="£"
+                                      placeholder="—"
+                                      className="text-muted-foreground"
+                                      onSave={(val) => updateVariantCost.mutate(
+                                        { variantId: v.id, cost: val },
+                                        {
+                                          onSuccess: () => toast.success(`Cost set to £${val.toFixed(2)}`),
+                                          onError: () => toast.error("Failed to save cost"),
+                                        }
+                                      )}
+                                    />
                                   </td>
                                 </tr>
                               );

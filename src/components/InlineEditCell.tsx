@@ -9,6 +9,8 @@ interface InlineEditCellProps {
   align?: "left" | "center" | "right";
   className?: string;
   onSave: (newValue: number) => void;
+  /** If provided, clearing the field and saving removes the value. */
+  onClear?: () => void;
 }
 
 const InlineEditCell = ({
@@ -19,6 +21,7 @@ const InlineEditCell = ({
   align = "right",
   className = "",
   onSave,
+  onClear,
 }: InlineEditCellProps) => {
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState("");
@@ -37,7 +40,14 @@ const InlineEditCell = ({
   };
 
   const handleSave = () => {
-    const num = parseFloat(editValue);
+    const trimmed = editValue.trim();
+    if (trimmed === "") {
+      // Field was cleared: remove the value if clearing is allowed.
+      if (onClear && value != null) onClear();
+      setEditing(false);
+      return;
+    }
+    const num = parseFloat(trimmed);
     if (!isNaN(num) && num !== value) {
       onSave(num);
     }

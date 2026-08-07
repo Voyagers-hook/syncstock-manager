@@ -283,6 +283,42 @@ export function useUpdateChannelPrice() {
   });
 }
 
+// Save a cost price on an individual variant (each item has its own cost).
+export function useUpdateVariantCost() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({ variantId, cost }: { variantId: string; cost: number }) => {
+      const { error } = await (supabase as any)
+        .from("variants")
+        .update({ cost_price: cost, updated_at: new Date().toISOString() })
+        .eq("id", variantId);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["products"] });
+    },
+  });
+}
+
+// Remove a Squarespace sale price (blank it out and turn the sale off).
+export function useClearSalePrice() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async ({ listingId }: { listingId: string }) => {
+      const { error } = await supabase
+        .from("channel_listings")
+        .update({ sq_sale_price: null, sq_on_sale: false, updated_at: new Date().toISOString() })
+        .eq("id", listingId);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["products"] });
+    },
+  });
+}
+
 // The rest (delete, update inventory, create inventory) is unchanged
 export function useDeleteProduct() {
   const queryClient = useQueryClient();
