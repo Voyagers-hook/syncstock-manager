@@ -94,7 +94,13 @@ const ProductTable = () => {
 
   // Per-channel margin calculation including fees
   const getMargins = (p: ProductWithDetails) => {
-    const cost = p.cost_price ? parseFloat(String(p.cost_price)) : null;
+    // Use the per-item (variant) costs; average them, falling back to the old product cost.
+    const variantCosts = p.variants
+      .map((v) => v.cost_price)
+      .filter((c): c is number => typeof c === "number" && c > 0);
+    const cost = variantCosts.length
+      ? variantCosts.reduce((a, b) => a + b, 0) / variantCosts.length
+      : (p.cost_price ? parseFloat(String(p.cost_price)) : null);
     if (!cost || cost === 0) return { ebay: null, sqsp: null };
 
     let ebayMargin: number | null = null;
