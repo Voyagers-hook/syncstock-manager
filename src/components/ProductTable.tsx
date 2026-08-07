@@ -124,13 +124,15 @@ const ProductTable = () => {
 
   // Per-item margin: uses that single item's own cost and its own selling price.
   const marginFor = (
-    cost: number | null | undefined,
-    sell: number | null | undefined,
+    cost: number | string | null | undefined,
+    sell: number | string | null | undefined,
     channel: "ebay" | "squarespace"
   ): number | null => {
-    if (!cost || cost <= 0 || !sell || sell <= 0) return null;
-    const fees = channel === "ebay" ? (sell * 0.109 + 0.30 + 0.03) * 1.20 : sell * 0.055;
-    return ((sell - cost - fees) / sell) * 100;
+    const c = Number(cost);
+    const s = Number(sell);
+    if (!Number.isFinite(c) || c <= 0 || !Number.isFinite(s) || s <= 0) return null;
+    const fees = channel === "ebay" ? (s * 0.109 + 0.30 + 0.03) * 1.20 : s * 0.055;
+    return ((s - c - fees) / s) * 100;
   };
 
   const formatMargin = (margin: number | null) => {
@@ -300,6 +302,12 @@ const ProductTable = () => {
                               const vEbay = product.channel_listings.find((l) => l.variant_id === v.id && l.channel === "ebay");
                               const vSqsp = product.channel_listings.find((l) => l.variant_id === v.id && l.channel === "squarespace");
                               const vStock = vInventory?.total_stock ?? 0;
+                              // The Squarespace selling price for margin: live sale price if on sale, else base, else channel price.
+                              const vSqspSell = vSqsp
+                                ? (vSqsp.sq_on_sale && vSqsp.sq_sale_price != null
+                                    ? vSqsp.sq_sale_price
+                                    : (vSqsp.sq_base_price ?? vSqsp.channel_price))
+                                : null;
                               return (
                                 <tr key={v.id} className="border-t border-border/50">
                                   <td className="px-3 py-2 text-sm text-foreground">
@@ -444,7 +452,7 @@ const ProductTable = () => {
                                     {formatMargin(marginFor(v.cost_price, vEbay?.channel_price ?? null, "ebay"))}
                                   </td>
                                   <td className="px-3 py-2 text-right">
-                                    {formatMargin(marginFor(v.cost_price, vSqsp ? ((vSqsp.sq_on_sale ? (vSqsp.sq_sale_price ?? vSqsp.sq_base_price) : vSqsp.sq_base_price) ?? vSqsp.channel_price) : null, "squarespace"))}
+                                    {formatMargin(marginFor(v.cost_price, vSqspSell, "squarespace"))}
                                   </td>
                                 </tr>
                               );
