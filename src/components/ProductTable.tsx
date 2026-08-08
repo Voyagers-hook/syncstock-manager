@@ -131,7 +131,7 @@ const ProductTable = () => {
     const c = Number(cost);
     const s = Number(sell);
     if (!Number.isFinite(c) || c <= 0 || !Number.isFinite(s) || s <= 0) return null;
-    const fees = channel === "ebay" ? (s * 0.109 + 0.30 + 0.03) * 1.20 : s * 0.055;
+    const fees = channel === "ebay" ? (s * 0.109 + 0.30 + 0.03) * 1.20 : s * 0.02 + 0.25;
     return ((s - c - fees) / s) * 100;
   };
 
