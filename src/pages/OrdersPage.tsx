@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import ConceptLayout from "@/components/ConceptLayout";
-import { useOrders, OrderRow } from "@/hooks/use-orders";
+import { useOrders, OrderRow, orderStatus } from "@/hooks/use-orders";
 import OrderModal from "@/components/modals/OrderModal";
 import { downloadCsv } from "@/lib/csv";
 
@@ -18,14 +18,7 @@ const FILTERS: [Filter, string][] = [
   ["returns", "Returns"],
 ];
 
-function statusOf(o: OrderRow): string {
-  const s = (o.fulfillment_status ?? o.status ?? "").toLowerCase();
-  if (s.includes("return")) return "Returned";
-  if (s.includes("dispatch") || s.includes("fulfil") || s.includes("ship") || s.includes("complete"))
-    return "Dispatched";
-  if (s) return o.fulfillment_status ?? o.status ?? "—";
-  return "Undispatched";
-}
+const statusOf = orderStatus;
 
 const OrdersPage = () => {
   const { data: orders = [] } = useOrders();

@@ -27,6 +27,21 @@ export interface OrderRow {
   ordered_at: string | null;
 }
 
+// Normalise an order's dispatch status from the captured fulfilment field.
+// Order matters: "undispatched" contains "dispatch", and "returned" must win first.
+export function orderStatus(o: {
+  fulfillment_status: string | null;
+  status?: string | null;
+}): "Dispatched" | "Undispatched" | "Returned" {
+  const f = (o.fulfillment_status ?? "").toString().toLowerCase();
+  if (f.includes("return")) return "Returned";
+  if (f.startsWith("undispatch") || f === "pending" || f === "unfulfilled" || f === "not_fulfilled")
+    return "Undispatched";
+  if (f.includes("dispatch") || f.includes("fulfil") || f.includes("ship") || f.includes("complete"))
+    return "Dispatched";
+  return "Undispatched";
+}
+
 // Pull every order line, newest first. Orders are the record of truth, so the
 // page reads them directly rather than through any cached aggregate.
 export function useOrders() {

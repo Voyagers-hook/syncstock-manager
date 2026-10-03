@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useCreateRefund } from "@/hooks/use-refunds";
-import type { OrderRow } from "@/hooks/use-orders";
+import { orderStatus, type OrderRow } from "@/hooks/use-orders";
 
 const money = (n: number | null | undefined) =>
   n === null || n === undefined ? "—" : `£${Number(n).toFixed(2)}`;
@@ -94,7 +94,7 @@ export default function OrderModal({
                 <Row label="Quantity" value={String(order.quantity ?? 1)} />
                 <Row label="Unit price" value={money(order.unit_price)} />
                 <Row label="Order total" value={money(order.total_price)} />
-                <Row label="Status" value={order.fulfillment_status ?? order.status ?? "—"} />
+                <Row label="Status" value={orderStatus(order)} />
                 {order.tracking_number && (
                   <Row
                     label="Tracking"
