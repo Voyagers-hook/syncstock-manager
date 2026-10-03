@@ -10,13 +10,27 @@ export interface TopSeller {
   platforms: string[];
 }
 
-export function useTopSellers(limit = 12, sortBy: "quantity" | "revenue" = "quantity") {
+export interface TopSellersOptions {
+  from?: string | null; // ISO date (inclusive)
+  to?: string | null; // ISO date (exclusive)
+  order?: "desc" | "asc"; // desc = best sellers, asc = worst sellers
+}
+
+export function useTopSellers(
+  limit = 12,
+  sortBy: "quantity" | "revenue" = "quantity",
+  opts: TopSellersOptions = {},
+) {
+  const { from = null, to = null, order = "desc" } = opts;
   return useQuery({
-    queryKey: ["top-sellers", limit, sortBy],
+    queryKey: ["top-sellers", limit, sortBy, from, to, order],
     queryFn: async (): Promise<TopSeller[]> => {
-      const { data: orders, error: oErr } = await supabase
+      let query = supabase
         .from("orders")
-        .select("sku, item_name, quantity, unit_price, total_price, platform");
+        .select("sku, item_name, quantity, unit_price, total_price, platform, ordered_at");
+      if (from) query = query.gte("ordered_at", from);
+      if (to) query = query.lt("ordered_at", to);
+      const { data: orders, error: oErr } = await query;
       if (oErr) throw oErr;
       if (!orders?.length) return [];
 
@@ -53,11 +67,13 @@ export function useTopSellers(limit = 12, sortBy: "quantity" | "revenue" = "quan
         }
       }
 
-      const sorted = Array.from(agg.values()).sort((a, b) =>
-        sortBy === "revenue"
-          ? b.total_revenue - a.total_revenue
-          : b.total_quantity - a.total_quantity
-      );
+      const sorted = Array.from(agg.values()).sort((a, b) => {
+        const diff =
+          sortBy === "revenue"
+            ? b.total_revenue - a.total_revenue
+            : b.total_quantity - a.total_quantity;
+        return order === "asc" ? -diff : diff;
+      });
 
       return sorted.slice(0, limit).map((s) => ({
         variant_key: s.variant_key,

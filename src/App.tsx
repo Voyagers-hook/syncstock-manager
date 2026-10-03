@@ -4,6 +4,10 @@ import { BrowserRouter, Route, Routes } from "react-router-dom";
 import { Toaster as Sonner } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import Index from "./pages/Index.tsx";
+import InventoryPage from "./pages/InventoryPage.tsx";
+import OrdersPage from "./pages/OrdersPage.tsx";
+import RefundsPage from "./pages/RefundsPage.tsx";
+import SalesPage from "./pages/SalesPage.tsx";
 import ProductsPage from "./pages/ProductsPage.tsx";
 import MergePage from "./pages/MergePage.tsx";
 import TopSellersPage from "./pages/TopSellersPage.tsx";
@@ -117,6 +121,10 @@ const App = () => {
         <BrowserRouter basename={import.meta.env.BASE_URL}>
           <Routes>
             <Route path="/" element={<Index />} />
+            <Route path="/inventory" element={<InventoryPage />} />
+            <Route path="/orders" element={<OrdersPage />} />
+            <Route path="/refunds" element={<RefundsPage />} />
+            <Route path="/sales" element={<SalesPage />} />
             <Route path="/products" element={<ProductsPage />} />
             <Route path="/merge" element={<MergePage />} />
             <Route path="/top-sellers" element={<TopSellersPage />} />

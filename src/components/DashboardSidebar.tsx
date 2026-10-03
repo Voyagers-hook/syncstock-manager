@@ -1,16 +1,38 @@
-import { Package, LayoutDashboard, Link2, Trophy, Settings } from "lucide-react";
+import {
+  Package,
+  LayoutDashboard,
+  Link2,
+  Trophy,
+  Settings,
+  ShoppingCart,
+  Undo2,
+  PoundSterling,
+} from "lucide-react";
 import { useLocation, Link } from "react-router-dom";
 import { useEffect, useState } from "react";
 import { supabase } from "@/integrations/supabase/client";
 
 const LOGO_URL = "https://voyagers-hook.github.io/images/logo%20trans.png";
 
-const items = [
-  { icon: LayoutDashboard, label: "Dashboard", path: "/" },
-  { icon: Package, label: "Products", path: "/products" },
-  { icon: Link2, label: "Merge Items", path: "/merge" },
-  { icon: Trophy, label: "Top Sellers", path: "/top-sellers" },
-  { icon: Settings, label: "Settings", path: "/settings" },
+const groups = [
+  {
+    label: "Operations",
+    items: [
+      { icon: LayoutDashboard, label: "Dashboard", path: "/" },
+      { icon: Package, label: "Inventory", path: "/inventory" },
+      { icon: ShoppingCart, label: "Orders", path: "/orders" },
+      { icon: Link2, label: "Merge Items", path: "/merge" },
+    ],
+  },
+  {
+    label: "Insight",
+    items: [
+      { icon: PoundSterling, label: "Sales & Profit", path: "/sales" },
+      { icon: Undo2, label: "Refunds", path: "/refunds" },
+      { icon: Trophy, label: "Top Sellers", path: "/top-sellers" },
+      { icon: Settings, label: "Settings", path: "/settings" },
+    ],
+  },
 ];
 
 const DashboardSidebar = () => {
@@ -33,33 +55,43 @@ const DashboardSidebar = () => {
   const ebayConnected = (channelCounts["ebay"] ?? 0) > 0;
   const sqspConnected = (channelCounts["squarespace"] ?? 0) > 0;
 
+  const isActive = (path: string) =>
+    path === "/" ? location.pathname === "/" : location.pathname.startsWith(path);
+
   return (
     <aside className="fixed left-0 top-0 h-screen w-60 bg-sidebar flex flex-col z-30">
       <div className="flex items-center gap-3 px-5 py-5 border-b border-sidebar-border">
         <img src={LOGO_URL} alt="Voyager's Hook" className="w-10 h-10 object-contain" />
-        <span className="text-sidebar-primary-foreground font-semibold text-base tracking-tight leading-tight">
+        <span className="text-sidebar-accent-foreground font-semibold text-base tracking-tight leading-tight">
           Voyager's Hook
         </span>
       </div>
 
-      <nav className="flex-1 px-3 py-4 space-y-1">
-        {items.map((item) => {
-          const isActive = location.pathname === item.path;
-          return (
-            <Link
-              key={item.label}
-              to={item.path}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
-                isActive
-                  ? "bg-sidebar-accent text-sidebar-primary-foreground"
-                  : "text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-primary-foreground"
-              }`}
-            >
-              <item.icon className="w-[18px] h-[18px]" />
-              {item.label}
-            </Link>
-          );
-        })}
+      <nav className="flex-1 px-3 py-4 space-y-5 overflow-y-auto">
+        {groups.map((group) => (
+          <div key={group.label} className="space-y-1">
+            <p className="px-2 pb-1 text-[11px] font-semibold uppercase tracking-wider text-sidebar-foreground/40">
+              {group.label}
+            </p>
+            {group.items.map((item) => {
+              const active = isActive(item.path);
+              return (
+                <Link
+                  key={item.label}
+                  to={item.path}
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
+                    active
+                      ? "bg-sidebar-primary text-sidebar-primary-foreground"
+                      : "text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
+                  }`}
+                >
+                  <item.icon className="w-[18px] h-[18px]" />
+                  {item.label}
+                </Link>
+              );
+            })}
+          </div>
+        ))}
       </nav>
 
       <div className="px-4 pb-5 space-y-2">

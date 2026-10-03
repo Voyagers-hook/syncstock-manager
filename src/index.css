@@ -36,24 +36,25 @@
 
     --radius: 0.5rem;
 
-    --sidebar-bg: 222 47% 11%;
-    --sidebar-fg: 220 20% 80%;
-    --sidebar-active: 174 58% 36%;
-    --sidebar-hover: 222 40% 16%;
+    --sidebar-bg: 43 10% 13%;
+    --sidebar-fg: 43 12% 72%;
+    --sidebar-active: 174 58% 40%;
+    --sidebar-hover: 42 11% 19%;
 
     --success: 142 71% 45%;
     --success-foreground: 0 0% 100%;
     --warning: 38 92% 50%;
     --warning-foreground: 0 0% 100%;
 
-    --sidebar-background: 222 47% 11%;
-    --sidebar-foreground: 220 20% 80%;
-    --sidebar-primary: 174 58% 36%;
+    /* Warm charcoal sidebar (#26241f) */
+    --sidebar-background: 43 10% 13%;
+    --sidebar-foreground: 43 12% 72%;
+    --sidebar-primary: 174 58% 40%;
     --sidebar-primary-foreground: 0 0% 100%;
-    --sidebar-accent: 222 40% 16%;
-    --sidebar-accent-foreground: 220 20% 80%;
-    --sidebar-border: 222 30% 18%;
-    --sidebar-ring: 174 58% 36%;
+    --sidebar-accent: 42 11% 19%;
+    --sidebar-accent-foreground: 43 15% 88%;
+    --sidebar-border: 42 10% 22%;
+    --sidebar-ring: 174 58% 40%;
   }
 
   .dark {

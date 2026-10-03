@@ -1,385 +1,102 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-};
+// SyncStock Squarespace import (rebuilt 2026-10).
+// Imports/updates Squarespace products. Never overwrites existing stock (only seeds
+// brand-new variants). Name-refresh: for website-only products (no eBay listing), if
+// the Squarespace title has changed, the tracker name is updated - so a renamed or
+// repurposed listing stops hiding under its old name. Merged products (with an eBay
+// listing) keep their name so eBay and Squarespace titles never fight.
 
-const SQ_API_BASE = "https://api.squarespace.com/1.0";
-const FILTER_CHUNK_SIZE = 150;
+const cors = { "Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type" };
+const SQ = "https://api.squarespace.com/1.0";
+const CH = 150;
 
 Deno.serve(async (req) => {
-  if (req.method === "OPTIONS") {
-    return new Response("ok", { headers: corsHeaders });
-  }
-
-  const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
-  const supabaseServiceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-  const supabase = createClient(supabaseUrl, supabaseServiceKey);
-
-  const { data: secretRow } = await supabase
-    .from("sync_secrets").select("value").eq("key", "squarespace_api_key").single();
-  const sqApiKey = secretRow?.value ?? Deno.env.get("SQUARESPACE_API_KEY") ?? null;
-
-  if (!sqApiKey) {
-    return new Response(JSON.stringify({ error: "Missing squarespace_api_key in sync_secrets and env" }), {
-      status: 500,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
-  }
-
+  if (req.method === "OPTIONS") return new Response("ok", { headers: cors });
+  const supabase = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!);
+  const { data: k } = await supabase.from("sync_secrets").select("value").eq("key", "squarespace_api_key").maybeSingle();
+  const key = k?.value ?? Deno.env.get("SQUARESPACE_API_KEY");
+  if (!key) return json({ error: "Squarespace API key not set" }, 400);
   try {
-    const products = await fetchAllSquarespaceProducts(sqApiKey);
-    const stats = await upsertProducts(supabase, products);
-
-    await supabase.from("sync_log").insert({
-      sync_type: "squarespace_import",
-      status: "completed",
-      details: JSON.stringify({ ...stats }),
-      source: "edge_function",
-    });
-
-    return new Response(JSON.stringify({ success: true, ...stats }), {
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : "Unknown error";
-    console.error("Squarespace import error:", msg);
-    await supabase.from("sync_log").insert({
-      sync_type: "squarespace_import",
-      status: "failed",
-      error_message: msg,
-      source: "edge_function",
-    });
-    return new Response(JSON.stringify({ error: msg }), {
-      status: 500,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    const products = await fetchAll(key);
+    const stats = await upsert(supabase, products);
+    await supabase.from("sync_log").insert({ sync_type: "squarespace_import", status: "completed", details: stats, source: "edge_function" });
+    return json({ ok: true, ...stats });
+  } catch (e: any) {
+    await supabase.from("sync_log").insert({ sync_type: "squarespace_import", status: "failed", error_message: e.message, source: "edge_function" });
+    return json({ error: e.message }, 500);
   }
 });
 
-interface SqProduct {
-  id: string;
-  name: string;
-  description?: string;
-  url?: string;
-  variants: SqVariant[];
-  images?: { url: string }[];
-}
+function json(d: unknown, s = 200) { return new Response(JSON.stringify(d), { status: s, headers: { ...cors, "Content-Type": "application/json" } }); }
+function chunk<T>(a: T[], n: number) { const o: T[][] = []; for (let i = 0; i < a.length; i += n) o.push(a.slice(i, i + n)); return o; }
 
-interface SqVariant {
-  id: string;
-  sku?: string;
-  pricing: { basePrice: { value: string; currency: string } };
-  stock?: { quantity: number; unlimited: boolean };
-  attributes?: Record<string, string>;
-}
-
-async function fetchAllSquarespaceProducts(apiKey: string): Promise<SqProduct[]> {
-  const allProducts: SqProduct[] = [];
-  let cursor: string | undefined;
-
+async function fetchAll(key: string) {
+  const all: any[] = []; let cursor: string | undefined;
   while (true) {
-    const url = cursor
-      ? `${SQ_API_BASE}/commerce/products?cursor=${cursor}`
-      : `${SQ_API_BASE}/commerce/products`;
-
-    const resp = await fetch(url, {
-      headers: { Authorization: `Bearer ${apiKey}`, "User-Agent": "SyncStock/1.0" },
-    });
-
-    if (!resp.ok) {
-      const body = await resp.text();
-      throw new Error(`Squarespace API failed [${resp.status}]: ${body}`);
-    }
-
-    const data = await resp.json();
-    allProducts.push(...(data.products || []));
-
-    if (data.pagination?.hasNextPage && data.pagination?.nextPageCursor) {
-      cursor = data.pagination.nextPageCursor;
-    } else {
-      break;
-    }
+    const url = cursor ? `${SQ}/commerce/products?cursor=${cursor}` : `${SQ}/commerce/products`;
+    const r = await fetch(url, { headers: { Authorization: `Bearer ${key}`, "User-Agent": "SyncStock/2.0" } });
+    if (!r.ok) throw new Error(`Squarespace API ${r.status}: ${(await r.text()).slice(0, 200)}`);
+    const d = await r.json(); all.push(...(d.products ?? []));
+    if (d.pagination?.hasNextPage && d.pagination?.nextPageCursor) cursor = d.pagination.nextPageCursor; else break;
   }
-
-  return allProducts;
+  return all;
 }
 
-function chunkArray<T>(items: T[], chunkSize: number): T[][] {
-  const chunks: T[][] = [];
-  for (let index = 0; index < items.length; index += chunkSize) {
-    chunks.push(items.slice(index, index + chunkSize));
-  }
-  return chunks;
+async function rowsByCol(supabase: any, table: string, col: string, vals: string[], sel: string) {
+  if (!vals.length) return [] as any[]; const out: any[] = [];
+  for (const c of chunk([...new Set(vals)], CH)) { const { data } = await supabase.from(table).select(sel).in(col, c); out.push(...(data ?? [])); }
+  return out;
 }
 
-async function fetchRowsByColumn(
-  supabase: any,
-  table: string,
-  column: string,
-  values: string[],
-  select: string,
-) {
-  if (!values.length) return [];
-  const rows: any[] = [];
-  for (const chunk of chunkArray([...new Set(values)], FILTER_CHUNK_SIZE)) {
-    const { data, error } = await supabase.from(table).select(select).in(column, chunk);
-    if (error) throw error;
-    rows.push(...(data ?? []));
-  }
-  return rows;
-}
-
-async function fetchExistingSquarespaceListings(
-  supabase: any,
-  externalVariantIds: string[],
-  externalSkus: string[],
-) {
-  const rows: Array<{ id: string; variant_id: string; channel_variant_id: string | null; channel_sku: string | null }> = [];
-  const seen = new Set<string>();
-
-  if (externalVariantIds.length) {
-    for (const chunk of chunkArray([...new Set(externalVariantIds)], FILTER_CHUNK_SIZE)) {
-      const { data, error } = await supabase
-        .from("channel_listings")
-        .select("id, variant_id, channel_variant_id, channel_sku")
-        .eq("channel", "squarespace")
-        .in("channel_variant_id", chunk);
-      if (error) throw error;
-      for (const row of data ?? []) {
-        if (!seen.has(row.id)) { seen.add(row.id); rows.push(row); }
-      }
-    }
-  }
-
-  if (externalSkus.length) {
-    for (const chunk of chunkArray([...new Set(externalSkus)], FILTER_CHUNK_SIZE)) {
-      const { data, error } = await supabase
-        .from("channel_listings")
-        .select("id, variant_id, channel_variant_id, channel_sku")
-        .eq("channel", "squarespace")
-        .in("channel_sku", chunk);
-      if (error) throw error;
-      for (const row of data ?? []) {
-        if (!seen.has(row.id)) { seen.add(row.id); rows.push(row); }
-      }
-    }
-  }
-
-  const variants = await fetchRowsByColumn(
-    supabase, "variants", "id",
-    rows.map((row) => row.variant_id),
-    "id, product_id",
-  );
-
-  const productIdByVariantId = new Map<string, string>();
-  for (const variant of variants) productIdByVariantId.set(variant.id, variant.product_id);
-
-  return rows.map((row) => ({ ...row, product_id: productIdByVariantId.get(row.variant_id) ?? null }));
-}
-
-async function upsertProducts(supabase: any, squarespaceProducts: SqProduct[]) {
-  let productsCreated = 0;
-  let productsReused = 0;
-  let variantsCreated = 0;
-  let variantsReused = 0;
-  let listingsCreated = 0;
-  let listingsUpdated = 0;
-
-  const batchListingUpserts: any[] = [];
-  const batchListingInserts: { variantId: string; payload: any; productId: string; sqVariantId: string }[] = [];
-
-  const existingProducts = await fetchRowsByColumn(
-    supabase, "products", "name",
-    squarespaceProducts.map((p) => p.name),
-    "id, name, active",
-  );
-
-  const existingListings = await fetchExistingSquarespaceListings(
-    supabase,
-    squarespaceProducts.flatMap((p) => p.variants.map((v) => v.id)),
-    squarespaceProducts.flatMap((p) => p.variants.map((v) => v.sku || v.id).filter(Boolean)),
-  );
-
-  const listingByExternalVariantId = new Map<string, { id: string; variant_id: string; product_id: string | null | undefined }>();
-  const listingByChannelSku = new Map<string, { id: string; variant_id: string; product_id: string | null | undefined }>();
-
-  for (const listing of existingListings) {
-    const entry = { id: listing.id, variant_id: listing.variant_id, product_id: listing.product_id };
-    if (listing.channel_variant_id && !listingByExternalVariantId.has(listing.channel_variant_id))
-      listingByExternalVariantId.set(listing.channel_variant_id, entry);
-    if (listing.channel_sku && !listingByChannelSku.has(listing.channel_sku))
-      listingByChannelSku.set(listing.channel_sku, entry);
-  }
-
-  const existingVariants = await fetchRowsByColumn(
-    supabase, "variants", "product_id",
-    [
-      ...existingProducts.map((p) => p.id),
-      ...existingListings.map((l) => l.product_id).filter((id): id is string => Boolean(id)),
-    ],
-    "id, product_id, internal_sku, option1, option2",
-  );
-
-  const variantIdByProductAndSku = new Map<string, string>();
-  const variantIdByProductAndOption = new Map<string, string>();
-
-  for (const variant of existingVariants) {
-    if (variant.internal_sku)
-      variantIdByProductAndSku.set(`${variant.product_id}:${variant.internal_sku}`, variant.id);
-    const opt1 = variant.option1 ?? "";
-    const opt2 = variant.option2 ?? "";
-    const optKey = `${variant.product_id}:${opt1}:${opt2}`;
-    if (!variantIdByProductAndOption.has(optKey))
-      variantIdByProductAndOption.set(optKey, variant.id);
-  }
-
-  // Build a set of variant IDs that already have inventory rows.
-  // CRITICAL: We only seed stock from Squarespace once — when a brand-new variant
-  // is created for the first time. After that the DB is the master and we NEVER
-  // overwrite inventory from Squarespace's stock figures. All future stock changes
-  // come from order-sync (sales) or manual stocktakes via the dashboard.
-  const variantIdsWithInventory = new Set<string>();
-  const allExistingVariantIds = existingVariants.map((v: any) => v.id);
-  if (allExistingVariantIds.length > 0) {
-    const existingInv = await fetchRowsByColumn(
-      supabase, "inventory", "variant_id", allExistingVariantIds, "variant_id"
-    );
-    for (const inv of existingInv) variantIdsWithInventory.add(inv.variant_id);
-  }
-
-  const productIdsToActivate = new Set<string>();
-
-  for (const sqProduct of squarespaceProducts) {
-    const imageUrl = sqProduct.images?.[0]?.url || null;
-
-    const canonicalListing = sqProduct.variants
-      .map((v) => listingByExternalVariantId.get(v.id) ?? listingByChannelSku.get(v.sku || v.id))
-      .find((l): l is { id: string; variant_id: string; product_id: string | null | undefined } => Boolean(l));
-
-    let productId = canonicalListing?.product_id ?? null;
-
+async function upsert(supabase: any, sqProducts: any[]) {
+  let productsCreated = 0, productsReused = 0, variantsCreated = 0, listingsCreated = 0, listingsUpdated = 0, namesRefreshed = 0;
+  const extVarIds = sqProducts.flatMap((p) => (p.variants ?? []).map((v: any) => v.id));
+  const skus = sqProducts.flatMap((p) => (p.variants ?? []).map((v: any) => v.sku).filter(Boolean));
+  const existBase = [
+    ...(await rowsByCol(supabase, "channel_listings", "channel_variant_id", extVarIds, "id, variant_id, channel_variant_id, channel_sku")),
+    ...(await rowsByCol(supabase, "channel_listings", "channel_sku", skus, "id, variant_id, channel_variant_id, channel_sku")),
+  ].filter((r) => r);
+  const seen = new Set<string>(); const exist = existBase.filter((r) => (seen.has(r.id) ? false : (seen.add(r.id), true)));
+  const vrows = await rowsByCol(supabase, "variants", "id", exist.map((r) => r.variant_id), "id, product_id, internal_sku, option1");
+  const vToP = new Map<string, string>(); for (const v of vrows) vToP.set(v.id, v.product_id);
+  const byExtVar = new Map<string, any>(); const bySku = new Map<string, any>();
+  for (const l of exist) { const e = { id: l.id, variant_id: l.variant_id, product_id: vToP.get(l.variant_id) ?? null }; if (l.channel_variant_id) byExtVar.set(l.channel_variant_id, e); if (l.channel_sku) bySku.set(l.channel_sku, e); }
+  const prodIds = [...new Set(vrows.map((v) => v.product_id))];
+  const ebayVars = await rowsByCol(supabase, "channel_listings", "variant_id", vrows.map((v) => v.id), "variant_id, channel");
+  const hasEbay = new Set<string>(); for (const e of ebayVars) if (e.channel === "ebay") { const pid = vToP.get(e.variant_id); if (pid) hasEbay.add(pid); }
+  const prodRows = await rowsByCol(supabase, "products", "id", prodIds, "id, name");
+  const prodName = new Map<string, string>(); for (const p of prodRows) prodName.set(p.id, p.name);
+  const variantByPO = new Map<string, string>();
+  const existVars = await rowsByCol(supabase, "variants", "product_id", prodIds, "id, product_id, internal_sku, option1, option2");
+  for (const v of existVars) variantByPO.set(`${v.product_id}:${v.internal_sku ?? ""}`, v.id);
+  const invSet = new Set<string>(); const invRows = await rowsByCol(supabase, "inventory", "variant_id", existVars.map((v) => v.id), "variant_id"); for (const i of invRows) invSet.add(i.variant_id);
+  for (const p of sqProducts) {
+    const canon = (p.variants ?? []).map((v: any) => byExtVar.get(v.id) ?? bySku.get(v.sku ?? v.id)).find((x: any) => x);
+    let productId = canon?.product_id ?? null;
     if (!productId) {
-      const { data: product, error: prodErr } = await supabase
-        .from("products")
-        .insert({ name: sqProduct.name, description: sqProduct.description || null, image_url: imageUrl, status: "active", active: true })
-        .select("id").single();
-
-      if (prodErr || !product) { console.error(`Failed to create product for ${sqProduct.name}:`, prodErr); continue; }
-      productId = product.id;
-      productsCreated++;
+      const { data: np } = await supabase.from("products").insert({ name: p.name, description: p.description ?? null, image_url: p.images?.[0]?.url ?? null, status: "active", active: true }).select("id").single();
+      if (!np) continue; productId = np.id; productsCreated++;
     } else {
       productsReused++;
-      productIdsToActivate.add(productId);
+      if (!hasEbay.has(productId) && prodName.get(productId) && prodName.get(productId) !== p.name) { await supabase.from("products").update({ name: p.name, updated_at: new Date().toISOString() }).eq("id", productId); namesRefreshed++; }
+      await supabase.from("products").update({ active: true }).eq("id", productId);
     }
-
-    for (const sqVariant of sqProduct.variants) {
-      const existingListing =
-        listingByExternalVariantId.get(sqVariant.id) ??
-        listingByChannelSku.get(sqVariant.sku || sqVariant.id);
-
-      if (existingListing?.product_id) {
-        productId = existingListing.product_id;
-        productIdsToActivate.add(productId);
-      }
-
-      const price = parseFloat(sqVariant.pricing?.basePrice?.value || "0");
-      const attrs = sqVariant.attributes || {};
-      const optionValues = Object.values(attrs);
-      const variantSku = sqVariant.sku || sqVariant.id;
-      const variantKey = `${productId}:${variantSku}`;
-      const opt1 = optionValues[0] || "";
-      const opt2 = optionValues[1] || "";
-      const optKey = `${productId}:${opt1}:${opt2}`;
-
-      let variantId =
-        existingListing?.variant_id ??
-        variantIdByProductAndSku.get(variantKey) ??
-        variantIdByProductAndOption.get(optKey);
-
+    for (const v of (p.variants ?? [])) {
+      const ex = byExtVar.get(v.id) ?? bySku.get(v.sku ?? v.id);
+      const attrs = Object.values(v.attributes ?? {});
+      const sku = v.sku || v.id;
+      const price = parseFloat(v.pricing?.basePrice?.value ?? "0");
+      let variantId = ex?.variant_id ?? variantByPO.get(`${productId}:${sku}`) ?? null;
       if (!variantId) {
-        const { data: variant, error: variantErr } = await supabase
-          .from("variants")
-          .insert({ product_id: productId, internal_sku: variantSku, option1: optionValues[0] || null, option2: optionValues[1] || null })
-          .select("id").single();
-
-        if (variantErr || !variant) { console.error(`Failed to create variant for ${sqProduct.name} / ${variantSku}:`, variantErr); continue; }
-
-        variantId = variant.id;
-        variantIdByProductAndSku.set(variantKey, variant.id);
-        variantIdByProductAndOption.set(optKey, variant.id);
-        variantsCreated++;
-
-        // Only seed inventory for brand-new variants — never overwrite existing stock.
-        if (!variantIdsWithInventory.has(variant.id)) {
-          const initialStock = sqVariant.stock?.unlimited ? 999 : (sqVariant.stock?.quantity ?? 0);
-          await supabase.from("inventory").insert({
-            variant_id: variant.id,
-            product_id: productId,
-            total_stock: initialStock,
-          });
-          variantIdsWithInventory.add(variant.id);
-        }
-      } else {
-        variantsReused++;
-        variantIdByProductAndSku.set(variantKey, variantId);
+        const { data: nv } = await supabase.from("variants").insert({ product_id: productId, internal_sku: sku, option1: attrs[0] ?? null, option2: attrs[1] ?? null }).select("id").single();
+        variantId = nv?.id ?? null; if (!variantId) continue; variantsCreated++; variantByPO.set(`${productId}:${sku}`, variantId);
+        if (!invSet.has(variantId)) { const init = v.stock?.unlimited ? 999 : (v.stock?.quantity ?? 0); await supabase.from("inventory").insert({ variant_id: variantId, product_id: productId, total_stock: init }); invSet.add(variantId); }
       }
-
-      const listingPayload = {
-        variant_id: variantId,
-        channel: "squarespace",
-        channel_sku: variantSku,
-        channel_price: price,
-        sq_base_price: price,
-        channel_product_id: sqProduct.id,
-        channel_variant_id: sqVariant.id,
-        last_synced_at: new Date().toISOString(),
-      };
-
-      if (existingListing) {
-        batchListingUpserts.push({ id: existingListing.id, ...listingPayload });
-        listingsUpdated++;
-      } else {
-        batchListingInserts.push({ variantId: variantId!, payload: listingPayload, productId: productId!, sqVariantId: sqVariant.id });
-        listingsCreated++;
-      }
+      const payload = { variant_id: variantId, channel: "squarespace", channel_sku: sku, channel_price: price, sq_base_price: price, channel_product_id: p.id, channel_variant_id: v.id, last_synced_at: new Date().toISOString() };
+      if (ex) { await supabase.from("channel_listings").update(payload).eq("id", ex.id); listingsUpdated++; }
+      else { await supabase.from("channel_listings").insert(payload); listingsCreated++; }
     }
   }
-
-  const LCHUNK = 200;
-  if (batchListingUpserts.length > 0) {
-    for (let ci = 0; ci < batchListingUpserts.length; ci += LCHUNK)
-      await supabase.from("channel_listings").upsert(batchListingUpserts.slice(ci, ci + LCHUNK));
-  }
-
-  if (batchListingInserts.length > 0) {
-    const insertPayloads = batchListingInserts.map((b) => b.payload);
-    for (let ci = 0; ci < insertPayloads.length; ci += LCHUNK) {
-      const { data: inserted } = await supabase
-        .from("channel_listings").insert(insertPayloads.slice(ci, ci + LCHUNK))
-        .select("id, variant_id, channel_variant_id");
-      for (const row of inserted ?? []) {
-        listingByExternalVariantId.set(row.channel_variant_id, {
-          id: row.id, variant_id: row.variant_id,
-          product_id: batchListingInserts.find((b) => b.sqVariantId === row.channel_variant_id)?.productId ?? null,
-        });
-      }
-    }
-  }
-
-  if (productIdsToActivate.size > 0) {
-    for (const chunk of chunkArray([...productIdsToActivate], FILTER_CHUNK_SIZE))
-      await supabase.from("products").update({ active: true }).in("id", chunk);
-  }
-
-  return {
-    total_squarespace_products: squarespaceProducts.length,
-    products_created: productsCreated,
-    products_reused: productsReused,
-    variants_created: variantsCreated,
-    variants_reused: variantsReused,
-    listings_created: listingsCreated,
-    listings_updated: listingsUpdated,
-  };
+  return { total: sqProducts.length, products_created: productsCreated, products_reused: productsReused, variants_created: variantsCreated, listings_created: listingsCreated, listings_updated: listingsUpdated, names_refreshed: namesRefreshed };
 }
