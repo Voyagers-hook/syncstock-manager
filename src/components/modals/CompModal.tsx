@@ -11,10 +11,12 @@ export default function CompModal({
   target: CompTarget | null;
   onClose: () => void;
 }) {
-  const { data: rows = [], isLoading } = useCompetitorPrices(target?.variantId ?? null);
+  const { data: allRows = [], isLoading } = useCompetitorPrices(target?.variantId ?? null);
   const check = useRunCompetitorCheck();
   if (!target) return null;
 
+  // Drop "no match" markers (no delivered price) from the visible list.
+  const rows = allRows.filter((r) => r.delivered !== null && r.delivered !== undefined);
   const best = rows.length ? rows[0].delivered : null;
 
   return (
@@ -47,15 +49,17 @@ export default function CompModal({
                 <div className={`co ${bb ? "best" : ""}`} key={r.id}>
                   <div className="seller">
                     {r.url ? (
-                      <a href={r.url} target="_blank" rel="noreferrer" style={{ color: "inherit" }}>
-                        {r.seller ?? "eBay seller"}
+                      <a href={r.url} target="_blank" rel="noreferrer" style={{ color: "inherit", fontWeight: 650 }}>
+                        {r.title || r.seller || "eBay listing"}
                       </a>
                     ) : (
-                      r.seller ?? "eBay seller"
+                      <span style={{ fontWeight: 650 }}>{r.title || r.seller || "eBay listing"}</span>
                     )}
                     {bb && <span className="flag">cheapest</span>}
                     <br />
-                    <small>item {money(r.item_price)}</small>
+                    <small>
+                      {r.seller ?? "eBay seller"} · item {money(r.item_price)}
+                    </small>
                   </div>
                   <div className="pp">
                     + {r.postage ? `${money(r.postage)} P&P` : "free P&P"}

@@ -34,8 +34,8 @@ Deno.serve(async (req) => {
       const token = await ebayToken(appId, certId, tok.value);
       for (const t of await fetchEbayOrders(token, since, now)) {
         const sku = t.variationSku ?? t.variationName ?? t.itemId;
-        if (seen("ebay", t.orderId, sku)) continue;
-        try { if (await applySale("ebay", t.dedupKey, { cpid: t.cpid, vSku: t.variationSku, vName: t.variationName }, t.quantity, { platform: "ebay", platform_order_id: t.orderId, order_number: t.orderId, item_name: t.itemTitle, sku, unit_price: t.price, ordered_at: t.createdTime })) { ebayN++; mark("ebay", t.orderId, sku); } }
+        if (seen("ebay", t.orderId, sku)) { await enrich("ebay", t.orderId, t.cust); continue; }
+        try { if (await applySale("ebay", t.dedupKey, { cpid: t.cpid, vSku: t.variationSku, vName: t.variationName }, t.quantity, { platform: "ebay", platform_order_id: t.orderId, order_number: t.orderId, item_name: t.itemTitle, sku, unit_price: t.price, ordered_at: t.createdTime, ...(t.cust ?? {}) })) { ebayN++; mark("ebay", t.orderId, sku); } }
         catch (e: any) { errors.push(`ebay ${t.orderId}: ${e.message}`); }
       }
     } else errors.push("eBay creds/token missing");
@@ -46,9 +46,24 @@ Deno.serve(async (req) => {
     const sqKey = k?.value ?? Deno.env.get("SQUARESPACE_API_KEY");
     if (sqKey) {
       for (const o of await fetchSqOrders(sqKey, since, now)) {
+        const sh = o.shippingAddress ?? o.billingAddress ?? {};
+        const fulfil = (o.fulfillments ?? [])[0] ?? {};
+        const cust = {
+          customer_name: [sh.firstName, sh.lastName].filter(Boolean).join(" ") || null,
+          customer_email: o.customerEmail ?? null,
+          shipping_address_line1: sh.address1 ?? null,
+          shipping_address_line2: sh.address2 ?? null,
+          shipping_city: sh.city ?? null,
+          shipping_county: sh.state ?? null,
+          shipping_postcode: sh.postalCode ?? null,
+          shipping_country: sh.countryCode ?? null,
+          tracking_number: fulfil.trackingNumber ?? null,
+          tracking_carrier: fulfil.carrierName ?? null,
+          fulfillment_status: o.fulfillmentStatus ?? null,
+        };
         for (const li of (o.lineItems ?? [])) {
-          if (seen("squarespace", o.id, li.variantId)) continue;
-          try { if (await applySale("squarespace", `${o.id}::${li.variantId}`, { sqVariantId: li.variantId }, li.quantity, { platform: "squarespace", platform_order_id: o.id, order_number: o.orderNumber, item_name: li.productName, sku: li.variantId, unit_price: parseFloat(li.unitPricePaid?.value ?? "0"), ordered_at: o.createdOn })) { sqN++; mark("squarespace", o.id, li.variantId); } }
+          if (seen("squarespace", o.id, li.variantId)) { await enrich("squarespace", o.id, cust); continue; }
+          try { if (await applySale("squarespace", `${o.id}::${li.variantId}`, { sqVariantId: li.variantId }, li.quantity, { platform: "squarespace", platform_order_id: o.id, order_number: o.orderNumber, item_name: li.productName, sku: li.variantId, unit_price: parseFloat(li.unitPricePaid?.value ?? "0"), ordered_at: o.createdOn, ...cust })) { sqN++; mark("squarespace", o.id, li.variantId); } }
           catch (e: any) { errors.push(`sq ${o.id}: ${e.message}`); }
         }
       }
@@ -61,6 +76,16 @@ Deno.serve(async (req) => {
 
 function json(d: unknown, s = 200) { return new Response(JSON.stringify(d), { status: s, headers: { ...cors, "Content-Type": "application/json" } }); }
 function xtag(xml: string, t: string) { const m = xml.match(new RegExp(`<${t}[^>]*>([^<]*)</${t}>`)); return m ? m[1].trim() : null; }
+
+// Backfill customer/shipping/tracking onto an order we've already recorded, so
+// existing orders show their details without re-importing. Only fills blanks.
+async function enrich(channel: string, orderId: string, cust: any) {
+  if (!cust) return;
+  const patch: Record<string, any> = {};
+  for (const k of Object.keys(cust)) if (cust[k] != null && cust[k] !== "") patch[k] = cust[k];
+  if (Object.keys(patch).length)
+    await supabase.from("orders").update(patch).eq("platform", channel).eq("platform_order_id", orderId);
+}
 
 async function applySale(channel: string, dedupKey: string, match: any, qty: number, meta: any): Promise<boolean> {
   const { error: dupErr } = await supabase.from("processed_orders").insert({ channel, order_id: dedupKey });
@@ -111,12 +136,29 @@ async function fetchEbayOrders(token: string, since: Date, until: Date) {
     const xml = await resp.text();
     for (const [, oX] of xml.matchAll(/<Order>([\s\S]*?)<\/Order>/g)) {
       const orderId = xtag(oX, "OrderID") ?? ""; const created = xtag(oX, "CreatedTime") ?? new Date().toISOString();
+      // Order-level buyer, delivery address and tracking (shared by all lines in the order).
+      const sa = oX.match(/<ShippingAddress>([\s\S]*?)<\/ShippingAddress>/)?.[1] ?? "";
+      const track = oX.match(/<ShipmentTrackingDetails>([\s\S]*?)<\/ShipmentTrackingDetails>/)?.[1] ?? "";
+      const shipped = xtag(oX, "ShippedTime");
+      const cust = {
+        customer_name: xtag(sa, "Name") ?? xtag(oX, "BuyerUserID"),
+        customer_email: xtag(oX, "Email"),
+        shipping_address_line1: xtag(sa, "Street1"),
+        shipping_address_line2: xtag(sa, "Street2"),
+        shipping_city: xtag(sa, "CityName"),
+        shipping_county: xtag(sa, "StateOrProvince"),
+        shipping_postcode: xtag(sa, "PostalCode"),
+        shipping_country: xtag(sa, "CountryName") ?? xtag(sa, "Country"),
+        tracking_number: xtag(track, "ShipmentTrackingNumber"),
+        tracking_carrier: xtag(track, "ShippingCarrierUsed"),
+        fulfillment_status: shipped ? "Dispatched" : "Undispatched",
+      };
       for (const [, tX] of oX.matchAll(/<Transaction>([\s\S]*?)<\/Transaction>/g)) {
         const itemId = xtag(tX, "ItemID") ?? ""; if (!itemId) continue;
         let vSku: string | null = null, vName: string | null = null;
         const vm = tX.match(/<Variation>([\s\S]*?)<\/Variation>/);
         if (vm) { vSku = xtag(vm[1], "SKU"); const n: string[] = []; for (const [, nv] of vm[1].matchAll(/<NameValueList>([\s\S]*?)<\/NameValueList>/g)) { const v = xtag(nv, "Value"); if (v) n.push(v); } vName = n.join(" / ") || null; }
-        out.push({ orderId, createdTime: created, itemId, cpid: `v1|${itemId}|0`, itemTitle: xtag(tX, "Title") ?? "", variationSku: vSku, variationName: vName, quantity: parseInt(xtag(tX, "QuantityPurchased") ?? "1"), price: parseFloat(xtag(tX, "TransactionPrice") ?? "0"), dedupKey: `${orderId}::${vSku ?? vName ?? itemId}` });
+        out.push({ orderId, createdTime: created, itemId, cpid: `v1|${itemId}|0`, itemTitle: xtag(tX, "Title") ?? "", variationSku: vSku, variationName: vName, quantity: parseInt(xtag(tX, "QuantityPurchased") ?? "1"), price: parseFloat(xtag(tX, "TransactionPrice") ?? "0"), dedupKey: `${orderId}::${vSku ?? vName ?? itemId}`, cust });
       }
     }
     const tp = parseInt(xml.match(/<TotalNumberOfPages>(\d+)<\/TotalNumberOfPages>/)?.[1] ?? "1");

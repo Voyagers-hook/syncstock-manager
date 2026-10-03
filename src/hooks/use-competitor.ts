@@ -6,6 +6,7 @@ export interface CompetitorRow {
   id: string;
   variant_id: string;
   seller: string | null;
+  title: string | null;
   item_price: number | null;
   postage: number | null;
   delivered: number | null;

@@ -21,7 +21,6 @@ export interface ProductSales {
 }
 
 export interface SalesReport {
-  month: string;
   turnover: number;
   ebayTurnover: number;
   sqTurnover: number;
@@ -36,24 +35,16 @@ export interface SalesReport {
   products: ProductSales[];
 }
 
-function monthBounds(month: string) {
-  const [y, m] = month.split("-").map(Number);
-  const start = new Date(Date.UTC(y, m - 1, 1));
-  const end = new Date(Date.UTC(y, m, 1));
-  return { start: start.toISOString(), end: end.toISOString() };
-}
-
 function feeFor(platform: string, total: number) {
   const r = platform === "ebay" ? FEE_RATES.ebay : FEE_RATES.squarespace;
   return total > 0 ? total * r.pct + r.fixed : 0;
 }
 
-export function useSalesReport(month: string) {
+// Sales report for an explicit date range [start, end) as ISO strings.
+export function useSalesReport(start: string, end: string) {
   return useQuery({
-    queryKey: ["sales-report", month],
+    queryKey: ["sales-report", start, end],
     queryFn: async (): Promise<SalesReport> => {
-      const { start, end } = monthBounds(month);
-
       const { data: orders } = await (supabase as any)
         .from("orders")
         .select("platform, product_id, sku, item_name, quantity, total_price, unit_price, ordered_at")
@@ -147,7 +138,6 @@ export function useSalesReport(month: string) {
       const grossBeforePP = turnover - totalFees - cogs - refunds;
 
       return {
-        month,
         turnover,
         ebayTurnover,
         sqTurnover,
