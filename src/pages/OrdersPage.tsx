@@ -1,40 +1,46 @@
 import { useMemo, useState } from "react";
-import AppLayout from "@/components/AppLayout";
-import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
-import { Download, Search, Undo2 } from "lucide-react";
+import ConceptLayout from "@/components/ConceptLayout";
 import { useOrders, OrderRow } from "@/hooks/use-orders";
-import { ReturnModal } from "@/components/orders/ReturnModal";
+import OrderModal from "@/components/modals/OrderModal";
 import { downloadCsv } from "@/lib/csv";
 
-const gbp = (n: number | null | undefined) =>
+const money = (n: number | null | undefined) =>
   n === null || n === undefined ? "—" : `£${Number(n).toFixed(2)}`;
 const fmtDate = (s: string | null) =>
-  s ? new Date(s).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "2-digit" }) : "—";
+  s ? new Date(s).toLocaleDateString("en-GB", { day: "2-digit", month: "short" }) : "—";
 
-const PlatformBadge = ({ platform }: { platform: string }) => (
-  <Badge
-    className={
-      platform === "ebay"
-        ? "bg-[#e53238]/10 text-[#e53238] hover:bg-[#e53238]/10"
-        : "bg-primary/10 text-primary hover:bg-primary/10"
-    }
-  >
-    {platform === "ebay" ? "eBay" : platform === "squarespace" ? "Squarespace" : platform}
-  </Badge>
-);
+type Filter = "all" | "ebay" | "squarespace" | "undispatched" | "returns";
+const FILTERS: [Filter, string][] = [
+  ["all", "All"],
+  ["ebay", "eBay"],
+  ["squarespace", "Squarespace"],
+  ["undispatched", "Undispatched"],
+  ["returns", "Returns"],
+];
+
+function statusOf(o: OrderRow): string {
+  const s = (o.fulfillment_status ?? o.status ?? "").toLowerCase();
+  if (s.includes("return")) return "Returned";
+  if (s.includes("dispatch") || s.includes("fulfil") || s.includes("ship") || s.includes("complete"))
+    return "Dispatched";
+  if (s) return o.fulfillment_status ?? o.status ?? "—";
+  return "Undispatched";
+}
 
 const OrdersPage = () => {
-  const { data: orders = [], isLoading } = useOrders();
+  const { data: orders = [] } = useOrders();
   const [search, setSearch] = useState("");
-  const [platform, setPlatform] = useState<"all" | "ebay" | "squarespace">("all");
-  const [returnTarget, setReturnTarget] = useState<OrderRow | null>(null);
+  const [filter, setFilter] = useState<Filter>("all");
+  const [open, setOpen] = useState<OrderRow | null>(null);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     return orders.filter((o) => {
-      if (platform !== "all" && o.platform !== platform) return false;
+      const st = statusOf(o);
+      if (filter === "ebay" && o.platform !== "ebay") return false;
+      if (filter === "squarespace" && o.platform !== "squarespace") return false;
+      if (filter === "undispatched" && st !== "Undispatched") return false;
+      if (filter === "returns" && st !== "Returned") return false;
       if (!q) return true;
       return (
         (o.item_name ?? "").toLowerCase().includes(q) ||
@@ -43,117 +49,109 @@ const OrdersPage = () => {
         (o.customer_name ?? "").toLowerCase().includes(q)
       );
     });
-  }, [orders, search, platform]);
+  }, [orders, search, filter]);
 
   const exportCsv = () =>
     downloadCsv(
       `orders-${new Date().toISOString().slice(0, 10)}`,
       [
-        { key: "ordered_at", label: "Date" },
+        { key: "order", label: "Order" },
+        { key: "date", label: "Date" },
+        { key: "item", label: "Item" },
+        { key: "qty", label: "Qty" },
+        { key: "total", label: "Total £" },
         { key: "platform", label: "Platform" },
-        { key: "order_number", label: "Order" },
-        { key: "item_name", label: "Item" },
-        { key: "quantity", label: "Qty" },
-        { key: "unit_price", label: "Unit £" },
-        { key: "total_price", label: "Total £" },
-        { key: "customer_name", label: "Customer" },
+        { key: "status", label: "Status" },
+        { key: "customer", label: "Customer" },
       ],
       filtered.map((o) => ({
-        ...o,
-        ordered_at: fmtDate(o.ordered_at),
+        order: o.order_number ?? o.platform_order_id,
+        date: fmtDate(o.ordered_at),
+        item: o.item_name ?? o.sku ?? "",
+        qty: o.quantity,
+        total: o.total_price ?? "",
+        platform: o.platform,
+        status: statusOf(o),
+        customer: o.customer_name ?? "",
       })),
     );
 
+  const pill = (st: string) =>
+    st === "Returned" ? "out" : st === "Undispatched" ? "low" : "good";
+
   return (
-    <AppLayout
+    <ConceptLayout
       title="Orders"
-      subtitle="Every sale captured from eBay & Squarespace"
-      actions={
-        <Button variant="outline" size="sm" onClick={exportCsv}>
-          <Download className="w-4 h-4 mr-2" />
-          Export CSV
-        </Button>
-      }
+      subtitle="Every order, both platforms"
+      onExport={exportCsv}
+      search={search}
+      onSearch={setSearch}
     >
-      <div className="flex flex-wrap items-center gap-3 mb-5">
-        <div className="relative flex-1 min-w-[220px] max-w-sm">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
-          <Input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search item, order no, customer…"
-            className="pl-9"
-          />
+      <div className="seg" style={{ marginBottom: 16 }}>
+        {FILTERS.map(([k, lbl]) => (
+          <button key={k} className={filter === k ? "on" : ""} onClick={() => setFilter(k)}>
+            {lbl}
+          </button>
+        ))}
+      </div>
+      <div className="thead-wrap">
+        <div className="cap">
+          <h3>Orders</h3>
+          <div className="legend">
+            <span>click an order to see customer details, dispatch, or process a return</span>
+          </div>
         </div>
-        <div className="flex items-center gap-1 rounded-lg border bg-card p-1">
-          {([
-            ["all", "All"],
-            ["ebay", "eBay"],
-            ["squarespace", "Squarespace"],
-          ] as const).map(([k, lbl]) => (
-            <button
-              key={k}
-              onClick={() => setPlatform(k)}
-              className={`px-3 py-1.5 text-sm rounded-md transition-colors ${
-                platform === k
-                  ? "bg-primary text-primary-foreground"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              {lbl}
-            </button>
-          ))}
-        </div>
-        <span className="text-sm text-muted-foreground ml-auto">
-          {filtered.length} order{filtered.length === 1 ? "" : "s"}
-        </span>
+        <table>
+          <thead>
+            <tr>
+              <th>Order</th>
+              <th>Date</th>
+              <th>Items</th>
+              <th className="num">Total</th>
+              <th className="c">Platform</th>
+              <th className="c">Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.length === 0 ? (
+              <tr>
+                <td colSpan={6} className="empty">
+                  No orders match.
+                </td>
+              </tr>
+            ) : (
+              filtered.map((o) => {
+                const st = statusOf(o);
+                return (
+                  <tr className="vrow" key={o.id} style={{ cursor: "pointer" }} onClick={() => setOpen(o)}>
+                    <td>
+                      <b>{o.order_number ?? o.platform_order_id}</b>
+                    </td>
+                    <td>{fmtDate(o.ordered_at)}</td>
+                    <td>{o.item_name ?? o.sku ?? "—"}</td>
+                    <td className="num">{money(o.total_price)}</td>
+                    <td className="c">
+                      <span className={`plat ${o.platform === "ebay" ? "eb" : "sq"}`}>
+                        {o.platform === "ebay" ? "eBay" : "Squarespace"}
+                      </span>
+                    </td>
+                    <td className="c">
+                      <span className={`pill ${pill(st)}`}>{st}</span>
+                    </td>
+                  </tr>
+                );
+              })
+            )}
+          </tbody>
+        </table>
+      </div>
+      <div className="note">
+        Every order from both channels in one list. Click an order to see the customer's details and
+        shipping address, or process a return — send stock back, or write it off if damaged/lost.
       </div>
 
-      <div className="bg-card rounded-xl border overflow-hidden">
-        <div className="hidden md:grid grid-cols-[80px_110px_1fr_60px_90px_120px_90px] gap-2 px-4 py-2.5 text-xs font-medium text-muted-foreground bg-muted/30">
-          <span>Date</span>
-          <span>Platform</span>
-          <span>Item</span>
-          <span className="text-right">Qty</span>
-          <span className="text-right">Total</span>
-          <span>Order</span>
-          <span className="text-right">Action</span>
-        </div>
-        {isLoading ? (
-          <p className="text-sm text-muted-foreground py-10 text-center">Loading orders…</p>
-        ) : filtered.length === 0 ? (
-          <p className="text-sm text-muted-foreground py-10 text-center">No orders match.</p>
-        ) : (
-          filtered.map((o) => (
-            <div
-              key={o.id}
-              className="grid grid-cols-2 md:grid-cols-[80px_110px_1fr_60px_90px_120px_90px] gap-2 px-4 py-3 border-t items-center text-sm"
-            >
-              <span className="text-muted-foreground">{fmtDate(o.ordered_at)}</span>
-              <span>
-                <PlatformBadge platform={o.platform} />
-              </span>
-              <span className="col-span-2 md:col-span-1 min-w-0 truncate font-medium">
-                {o.item_name ?? o.sku ?? "—"}
-              </span>
-              <span className="text-right tabular-nums">{o.quantity}</span>
-              <span className="text-right tabular-nums">{gbp(o.total_price)}</span>
-              <span className="text-xs text-muted-foreground truncate">
-                {o.order_number ?? o.platform_order_id}
-              </span>
-              <span className="text-right">
-                <Button variant="outline" size="sm" onClick={() => setReturnTarget(o)}>
-                  <Undo2 className="w-3.5 h-3.5 mr-1.5" />
-                  Return
-                </Button>
-              </span>
-            </div>
-          ))
-        )}
-      </div>
-
-      <ReturnModal order={returnTarget} onClose={() => setReturnTarget(null)} />
-    </AppLayout>
+      <OrderModal order={open} onClose={() => setOpen(null)} />
+    </ConceptLayout>
   );
 };
 

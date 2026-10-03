@@ -15,7 +15,15 @@ export interface OrderRow {
   status: string | null;
   fulfillment_status: string | null;
   tracking_number: string | null;
+  tracking_carrier: string | null;
   customer_name: string | null;
+  customer_email: string | null;
+  shipping_address_line1: string | null;
+  shipping_address_line2: string | null;
+  shipping_city: string | null;
+  shipping_county: string | null;
+  shipping_postcode: string | null;
+  shipping_country: string | null;
   ordered_at: string | null;
 }
 
@@ -31,7 +39,7 @@ export function useOrders() {
         const { data, error } = await (supabase as any)
           .from("orders")
           .select(
-            "id, platform, platform_order_id, order_number, product_id, sku, item_name, quantity, unit_price, total_price, status, fulfillment_status, tracking_number, customer_name, ordered_at",
+            "id, platform, platform_order_id, order_number, product_id, sku, item_name, quantity, unit_price, total_price, status, fulfillment_status, tracking_number, tracking_carrier, customer_name, customer_email, shipping_address_line1, shipping_address_line2, shipping_city, shipping_county, shipping_postcode, shipping_country, ordered_at",
           )
           .order("ordered_at", { ascending: false })
           .range(from, from + 999);

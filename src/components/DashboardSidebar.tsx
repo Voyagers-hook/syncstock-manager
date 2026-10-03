@@ -1,115 +1,141 @@
-import {
-  Package,
-  LayoutDashboard,
-  Link2,
-  Trophy,
-  Settings,
-  ShoppingCart,
-  Undo2,
-  PoundSterling,
-} from "lucide-react";
-import { useLocation, Link } from "react-router-dom";
-import { useEffect, useState } from "react";
-import { supabase } from "@/integrations/supabase/client";
+import { ReactNode } from "react";
+import { Link, useLocation } from "react-router-dom";
 
 const LOGO_URL = "https://voyagers-hook.github.io/images/logo%20trans.png";
 
-const groups = [
+const NAV: {
+  group?: string;
+  items: { label: string; path: string; icon: ReactNode }[];
+}[] = [
   {
-    label: "Operations",
     items: [
-      { icon: LayoutDashboard, label: "Dashboard", path: "/" },
-      { icon: Package, label: "Inventory", path: "/inventory" },
-      { icon: ShoppingCart, label: "Orders", path: "/orders" },
-      { icon: Link2, label: "Merge Items", path: "/merge" },
+      {
+        label: "Dashboard",
+        path: "/",
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+            <rect x="3" y="3" width="7" height="9" rx="1.5" />
+            <rect x="14" y="3" width="7" height="5" rx="1.5" />
+            <rect x="14" y="12" width="7" height="9" rx="1.5" />
+            <rect x="3" y="16" width="7" height="5" rx="1.5" />
+          </svg>
+        ),
+      },
     ],
   },
   {
-    label: "Insight",
+    group: "Operations",
     items: [
-      { icon: PoundSterling, label: "Sales & Profit", path: "/sales" },
-      { icon: Undo2, label: "Refunds", path: "/refunds" },
-      { icon: Trophy, label: "Top Sellers", path: "/top-sellers" },
-      { icon: Settings, label: "Settings", path: "/settings" },
+      {
+        label: "Inventory",
+        path: "/inventory",
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+            <path d="M21 16V8a2 2 0 0 0-1-1.7l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.7l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
+            <path d="M3.3 7 12 12l8.7-5M12 22V12" />
+          </svg>
+        ),
+      },
+      {
+        label: "Orders",
+        path: "/orders",
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+            <path d="M3 7h13l-1 9H5z" />
+            <path d="m3 7-1-3H1M8 21a1 1 0 1 0 0-2 1 1 0 0 0 0 2zM15 21a1 1 0 1 0 0-2 1 1 0 0 0 0 2z" />
+          </svg>
+        ),
+      },
+      {
+        label: "Merge",
+        path: "/merge",
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+            <path d="M8 7h12M8 7 5 4M8 7 5 10M16 17H4M16 17l3-3M16 17l3 3" />
+          </svg>
+        ),
+      },
+      {
+        label: "Refunds",
+        path: "/refunds",
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+            <path d="M3 7h13l-1.5 9h-10z" />
+            <path d="m3 7-1-3H1" />
+            <path d="M14 11 11 8m0 3 3-3" />
+          </svg>
+        ),
+      },
+    ],
+  },
+  {
+    group: "Insight",
+    items: [
+      {
+        label: "Sales & profit",
+        path: "/sales",
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+            <path d="M12 1v22M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6" />
+          </svg>
+        ),
+      },
+      {
+        label: "Top sellers",
+        path: "/top-sellers",
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+            <path d="M3 3v18h18" />
+            <path d="m7 14 3-4 3 3 4-6" />
+          </svg>
+        ),
+      },
+      {
+        label: "Settings",
+        path: "/settings",
+        icon: (
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}>
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-2.7 1.1V21a2 2 0 1 1-4 0v-.1A1.6 1.6 0 0 0 7 19.4a1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0-1.1-2.7H1a2 2 0 1 1 0-4h.1A1.6 1.6 0 0 0 2.6 7" />
+          </svg>
+        ),
+      },
     ],
   },
 ];
 
 const DashboardSidebar = () => {
-  const location = useLocation();
-  const [channelCounts, setChannelCounts] = useState<Record<string, number>>({});
-
-  useEffect(() => {
-    async function load() {
-      const { data } = await supabase.from("channel_listings").select("channel");
-      if (!data) return;
-      const counts: Record<string, number> = {};
-      for (const row of data) {
-        counts[row.channel] = (counts[row.channel] ?? 0) + 1;
-      }
-      setChannelCounts(counts);
-    }
-    load();
-  }, []);
-
-  const ebayConnected = (channelCounts["ebay"] ?? 0) > 0;
-  const sqspConnected = (channelCounts["squarespace"] ?? 0) > 0;
-
-  const isActive = (path: string) =>
-    path === "/" ? location.pathname === "/" : location.pathname.startsWith(path);
+  const { pathname } = useLocation();
+  const isActive = (p: string) => (p === "/" ? pathname === "/" : pathname.startsWith(p));
 
   return (
-    <aside className="fixed left-0 top-0 h-screen w-60 bg-sidebar flex flex-col z-30">
-      <div className="flex items-center gap-3 px-5 py-5 border-b border-sidebar-border">
-        <img src={LOGO_URL} alt="Voyager's Hook" className="w-10 h-10 object-contain" />
-        <span className="text-sidebar-accent-foreground font-semibold text-base tracking-tight leading-tight">
-          Voyager's Hook
-        </span>
+    <aside className="side">
+      <div className="brand">
+        <div className="mark">
+          <img src={LOGO_URL} alt="Voyagers Hook" />
+        </div>
+        <div>
+          <h1>Voyagers Hook</h1>
+          <span>Stock Manager</span>
+        </div>
       </div>
-
-      <nav className="flex-1 px-3 py-4 space-y-5 overflow-y-auto">
-        {groups.map((group) => (
-          <div key={group.label} className="space-y-1">
-            <p className="px-2 pb-1 text-[11px] font-semibold uppercase tracking-wider text-sidebar-foreground/40">
-              {group.label}
-            </p>
-            {group.items.map((item) => {
-              const active = isActive(item.path);
-              return (
-                <Link
-                  key={item.label}
-                  to={item.path}
-                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-colors ${
-                    active
-                      ? "bg-sidebar-primary text-sidebar-primary-foreground"
-                      : "text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground"
-                  }`}
-                >
-                  <item.icon className="w-[18px] h-[18px]" />
-                  {item.label}
-                </Link>
-              );
-            })}
+      <nav className="nav">
+        {NAV.map((grp, gi) => (
+          <div key={gi}>
+            {grp.group && <div className="navlbl">{grp.group}</div>}
+            {grp.items.map((it) => (
+              <Link key={it.path} to={it.path} className={isActive(it.path) ? "active" : ""}>
+                {it.icon}
+                {it.label}
+              </Link>
+            ))}
           </div>
         ))}
       </nav>
-
-      <div className="px-4 pb-5 space-y-2">
-        <p className="text-xs font-medium text-sidebar-foreground/50 uppercase tracking-wider px-1">
-          Platforms
-        </p>
-        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-sidebar-accent">
-          <div className={`w-2 h-2 rounded-full ${ebayConnected ? "bg-success" : "bg-warning"}`} />
-          <span className="text-xs text-sidebar-foreground">
-            eBay — {ebayConnected ? `${channelCounts["ebay"]} listings` : "No listings"}
-          </span>
-        </div>
-        <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-sidebar-accent">
-          <div className={`w-2 h-2 rounded-full ${sqspConnected ? "bg-success" : "bg-warning"}`} />
-          <span className="text-xs text-sidebar-foreground">
-            Squarespace — {sqspConnected ? `${channelCounts["squarespace"]} listings` : "No listings"}
-          </span>
-        </div>
+      <div className="foot">
+        <b>eBay + Squarespace</b>
+        <br />
+        connected &amp; syncing
       </div>
     </aside>
   );
