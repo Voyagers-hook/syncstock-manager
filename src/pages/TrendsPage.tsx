@@ -27,9 +27,9 @@ const monthLabel = (key: string) => {
 };
 const fmtDay = (iso: string | null) =>
   iso ? new Date(iso).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "2-digit" }) : "—";
-const keyOf = (o: { product_id: string | null; item_name: string | null }) =>
-  o.product_id ?? `name:${o.item_name ?? "unknown"}`;
 const TEAL = "#0ea5a4";
+
+type Item = { key: string; name: string; productId: string };
 
 const TrendsPage = () => {
   const { data: orders = [] } = useOrders();
@@ -40,25 +40,47 @@ const TrendsPage = () => {
   const [query, setQuery] = useState("");
   const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState<string>("");
+  const [focusMonth, setFocusMonth] = useState<string | null>(null);
 
   const nameById = useMemo(() => {
     const m = new Map<string, string>();
     for (const p of products) m.set(p.id, p.name);
     return m;
   }, [products]);
-  const nameOf = (o: { product_id: string | null; item_name: string | null }) =>
-    (o.product_id && nameById.get(o.product_id)) || o.item_name || "Unknown";
+
+  // Map an order's (channel + sku) to its specific VARIANT, with a readable label
+  // like "Fjuka 2mm Pellets — Yellow". This is what makes the page item-level.
+  const itemIndex = useMemo(() => {
+    const m = new Map<string, Item>();
+    for (const p of products) {
+      for (const v of p.variants) {
+        const opt = [v.option1, v.option2].filter(Boolean).join(" / ");
+        const label = opt ? `${p.name} — ${opt}` : p.name;
+        for (const l of p.channel_listings.filter((x) => x.variant_id === v.id)) {
+          if (l.channel_sku) m.set(`${l.channel}|${l.channel_sku}`, { key: v.id, name: label, productId: p.id });
+          if (l.channel_variant_id) m.set(`${l.channel}|${l.channel_variant_id}`, { key: v.id, name: label, productId: p.id });
+        }
+      }
+    }
+    return m;
+  }, [products]);
+
+  const resolve = (o: { platform: string; sku: string | null; product_id: string | null; item_name: string | null }): Item => {
+    const hit = itemIndex.get(`${o.platform}|${o.sku}`);
+    if (hit) return hit;
+    const base = (o.product_id && nameById.get(o.product_id)) || o.item_name || "Unknown";
+    return { key: `${o.product_id ?? "np"}::${o.sku ?? ""}`, name: o.sku && o.sku !== base ? `${base} — ${o.sku}` : base, productId: o.product_id ?? "" };
+  };
 
   const brands = useMemo(() => {
     const s = new Set<string>();
-    for (const o of orders) s.add(brandOf(nameOf(o)));
+    for (const o of orders) s.add(brandOf(resolve(o).name));
     return ["All brands", ...Array.from(s).sort()];
-  }, [orders, nameById]);
+  }, [orders, itemIndex, nameById]);
 
-  // Orders scoped by the brand filter
   const fOrders = useMemo(
-    () => (brand === "All brands" ? orders : orders.filter((o) => brandOf(nameOf(o)) === brand)),
-    [orders, brand, nameById],
+    () => (brand === "All brands" ? orders : orders.filter((o) => brandOf(resolve(o).name) === brand)),
+    [orders, brand, itemIndex, nameById],
   );
 
   const months = useMemo(() => {
@@ -84,7 +106,7 @@ const TrendsPage = () => {
       rev[k] = (rev[k] ?? 0) + (o.total_price ?? 0);
       units[k] = (units[k] ?? 0) + (o.quantity ?? 0);
     }
-    return months.map((k) => ({ month: monthLabel(k), revenue: Math.round(rev[k] ?? 0), units: units[k] ?? 0 }));
+    return months.map((k) => ({ key: k, month: monthLabel(k), revenue: Math.round(rev[k] ?? 0), units: units[k] ?? 0 }));
   }, [fOrders, months]);
 
   const movers = useMemo(() => {
@@ -92,10 +114,10 @@ const TrendsPage = () => {
     const cur: Record<string, number> = {}, prev: Record<string, number> = {}, label: Record<string, string> = {};
     for (const o of fOrders) {
       if (!o.ordered_at) continue;
-      const t = new Date(o.ordered_at).getTime(), k = keyOf(o);
-      label[k] = nameOf(o);
-      if (t >= d30) cur[k] = (cur[k] ?? 0) + (o.quantity ?? 0);
-      else if (t >= d60) prev[k] = (prev[k] ?? 0) + (o.quantity ?? 0);
+      const t = new Date(o.ordered_at).getTime(), r = resolve(o);
+      label[r.key] = r.name;
+      if (t >= d30) cur[r.key] = (cur[r.key] ?? 0) + (o.quantity ?? 0);
+      else if (t >= d60) prev[r.key] = (prev[r.key] ?? 0) + (o.quantity ?? 0);
     }
     const rows = Object.keys({ ...cur, ...prev }).map((k) => {
       const c = cur[k] ?? 0, p = prev[k] ?? 0;
@@ -106,13 +128,13 @@ const TrendsPage = () => {
       rising: rows.filter((r) => r.c + r.p >= 3 && r.pct > 0).sort((a, b) => (b.pct === Infinity ? 1e9 : b.pct) - (a.pct === Infinity ? 1e9 : a.pct)).slice(0, 8),
       cooling: rows.filter((r) => r.p >= 2 && r.pct < 0).sort((a, b) => a.pct - b.pct).slice(0, 8),
     };
-  }, [fOrders, nameById]);
+  }, [fOrders, itemIndex, nameById]);
 
   const heat = useMemo(() => {
     const byBrand: Record<string, Record<string, number>> = {}, totals: Record<string, number> = {};
     for (const o of fOrders) {
       if (!o.ordered_at) continue;
-      const b = brandOf(nameOf(o)), k = monthKey(o.ordered_at);
+      const b = brandOf(resolve(o).name), k = monthKey(o.ordered_at);
       byBrand[b] = byBrand[b] ?? {};
       byBrand[b][k] = (byBrand[b][k] ?? 0) + (o.quantity ?? 0);
       totals[b] = (totals[b] ?? 0) + (o.quantity ?? 0);
@@ -122,46 +144,52 @@ const TrendsPage = () => {
       const max = Math.max(1, ...months.map((k) => byBrand[b]?.[k] ?? 0));
       return { brand: b, cells: months.map((k) => ({ key: k, units: byBrand[b]?.[k] ?? 0, intensity: (byBrand[b]?.[k] ?? 0) / max })) };
     });
-  }, [fOrders, months, nameById]);
+  }, [fOrders, months, itemIndex, nameById]);
 
-  const productList = useMemo(() => {
+  const itemList = useMemo(() => {
     const units: Record<string, number> = {}, label: Record<string, string> = {};
     for (const o of fOrders) {
-      const k = keyOf(o);
-      units[k] = (units[k] ?? 0) + (o.quantity ?? 0);
-      label[k] = nameOf(o);
+      const r = resolve(o);
+      units[r.key] = (units[r.key] ?? 0) + (o.quantity ?? 0);
+      label[r.key] = r.name;
     }
     return Object.keys(units).map((k) => ({ key: k, name: label[k], units: units[k] })).sort((a, b) => b.units - a.units);
-  }, [fOrders, nameById]);
+  }, [fOrders, itemIndex, nameById]);
 
   const matches = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return productList.slice(0, 8);
-    return productList.filter((p) => p.name.toLowerCase().includes(q)).slice(0, 10);
-  }, [productList, query]);
+    if (!q) return itemList.slice(0, 8);
+    return itemList.filter((p) => p.name.toLowerCase().includes(q)).slice(0, 12);
+  }, [itemList, query]);
+
+  // Drill-down: items sold in the clicked month
+  const monthItems = useMemo(() => {
+    if (!focusMonth) return [] as { key: string; name: string; units: number; revenue: number }[];
+    const u: Record<string, number> = {}, rev: Record<string, number> = {}, label: Record<string, string> = {};
+    for (const o of fOrders) {
+      if (!o.ordered_at || monthKey(o.ordered_at) !== focusMonth) continue;
+      const r = resolve(o);
+      u[r.key] = (u[r.key] ?? 0) + (o.quantity ?? 0);
+      rev[r.key] = (rev[r.key] ?? 0) + (o.total_price ?? 0);
+      label[r.key] = r.name;
+    }
+    return Object.keys(u).map((k) => ({ key: k, name: label[k], units: u[k], revenue: rev[k] })).sort((a, b) => b.units - a.units).slice(0, 20);
+  }, [fOrders, focusMonth, itemIndex, nameById]);
 
   const selKey = selected || "";
-  const selName = productList.find((p) => p.key === selKey)?.name ?? "";
+  const selName = itemList.find((p) => p.key === selKey)?.name ?? "";
+  const selectItem = (k: string, name: string) => { setSelected(k); setQuery(name); setOpen(false); };
 
-  const selectProduct = (k: string, name: string) => {
-    setSelected(k);
-    setQuery(name);
-    setOpen(false);
-  };
-
-  const productOrders = useMemo(
-    () =>
-      fOrders
-        .filter((o) => keyOf(o) === selKey)
-        .sort((a, b) => (b.ordered_at ?? "").localeCompare(a.ordered_at ?? "")),
-    [fOrders, selKey],
+  const itemOrders = useMemo(
+    () => fOrders.filter((o) => resolve(o).key === selKey).sort((a, b) => (b.ordered_at ?? "").localeCompare(a.ordered_at ?? "")),
+    [fOrders, selKey, itemIndex, nameById],
   );
 
-  const productMonthly = useMemo(() => {
+  const itemMonthly = useMemo(() => {
     const u: Record<string, number> = {};
-    for (const o of productOrders) if (o.ordered_at) u[monthKey(o.ordered_at)] = (u[monthKey(o.ordered_at)] ?? 0) + (o.quantity ?? 0);
+    for (const o of itemOrders) if (o.ordered_at) u[monthKey(o.ordered_at)] = (u[monthKey(o.ordered_at)] ?? 0) + (o.quantity ?? 0);
     return months.map((k) => ({ month: monthLabel(k), units: u[k] ?? 0 }));
-  }, [productOrders, months]);
+  }, [itemOrders, months]);
 
   const today = new Date();
   const [aFrom, setAFrom] = useState(isoDate(new Date(today.getTime() - 90 * 864e5)));
@@ -173,61 +201,28 @@ const TrendsPage = () => {
     const endD = new Date(to + "T00:00:00Z"); endD.setUTCDate(endD.getUTCDate() + 1);
     const end = endD.toISOString();
     let units = 0, revenue = 0;
-    for (const o of productOrders) if (o.ordered_at && o.ordered_at >= start && o.ordered_at < end) { units += o.quantity ?? 0; revenue += o.total_price ?? 0; }
+    for (const o of itemOrders) if (o.ordered_at && o.ordered_at >= start && o.ordered_at < end) { units += o.quantity ?? 0; revenue += o.total_price ?? 0; }
     return { units, revenue };
   };
-  const aTot = useMemo(() => sumRange(aFrom, aTo), [productOrders, aFrom, aTo]);
-  const bTot = useMemo(() => sumRange(bFrom, bTo), [productOrders, bFrom, bTo]);
+  const aTot = useMemo(() => sumRange(aFrom, aTo), [itemOrders, aFrom, aTo]);
+  const bTot = useMemo(() => sumRange(bFrom, bTo), [itemOrders, bFrom, bTo]);
 
   const di = { border: "1px solid var(--line)", borderRadius: 8, padding: "7px 9px", fontSize: 12.5 };
 
   const exportMovers = () =>
-    downloadCsv(
-      `trends-movers-${isoDate(new Date())}`,
-      [
-        { key: "dir", label: "Direction" },
-        { key: "name", label: "Item" },
-        { key: "prev", label: "Prev 30d units" },
-        { key: "cur", label: "Last 30d units" },
-        { key: "pct", label: "Change %" },
-      ],
-      [
-        ...movers.rising.map((r) => ({ dir: "Rising", name: r.name, prev: r.p, cur: r.c, pct: r.pct === Infinity ? "new" : Math.round(r.pct) })),
-        ...movers.cooling.map((r) => ({ dir: "Cooling", name: r.name, prev: r.p, cur: r.c, pct: Math.round(r.pct) })),
-      ],
-    );
+    downloadCsv(`trends-movers-${isoDate(new Date())}`,
+      [{ key: "dir", label: "Direction" }, { key: "name", label: "Item" }, { key: "prev", label: "Prev 30d" }, { key: "cur", label: "Last 30d" }, { key: "pct", label: "Change %" }],
+      [...movers.rising.map((r) => ({ dir: "Rising", name: r.name, prev: r.p, cur: r.c, pct: r.pct === Infinity ? "new" : Math.round(r.pct) })),
+       ...movers.cooling.map((r) => ({ dir: "Cooling", name: r.name, prev: r.p, cur: r.c, pct: Math.round(r.pct) }))]);
 
-  const exportProductOrders = () =>
-    downloadCsv(
-      `sales-${selName.replace(/[^a-z0-9]+/gi, "-").slice(0, 40)}`,
-      [
-        { key: "date", label: "Date" },
-        { key: "order", label: "Order" },
-        { key: "platform", label: "Platform" },
-        { key: "qty", label: "Qty" },
-        { key: "unit", label: "Unit £" },
-        { key: "total", label: "Total £" },
-        { key: "customer", label: "Customer" },
-        { key: "town", label: "Town" },
-      ],
-      productOrders.map((o) => ({
-        date: fmtDay(o.ordered_at),
-        order: o.order_number ?? o.platform_order_id,
-        platform: o.platform,
-        qty: o.quantity,
-        unit: o.unit_price ?? "",
-        total: o.total_price ?? "",
-        customer: o.customer_name ?? "",
-        town: o.shipping_city ?? "",
-      })),
-    );
+  const exportItemOrders = () =>
+    downloadCsv(`sales-${selName.replace(/[^a-z0-9]+/gi, "-").slice(0, 40)}`,
+      [{ key: "date", label: "Date" }, { key: "order", label: "Order" }, { key: "platform", label: "Platform" }, { key: "qty", label: "Qty" }, { key: "unit", label: "Unit £" }, { key: "total", label: "Total £" }, { key: "customer", label: "Customer" }, { key: "town", label: "Town" }],
+      itemOrders.map((o) => ({ date: fmtDay(o.ordered_at), order: o.order_number ?? o.platform_order_id, platform: o.platform, qty: o.quantity, unit: o.unit_price ?? "", total: o.total_price ?? "", customer: o.customer_name ?? "", town: o.shipping_city ?? "" })));
 
   const MoverRow = ({ r, down }: { r: any; down?: boolean }) => (
-    <div
-      onClick={() => selectProduct(r.k, r.name)}
-      style={{ display: "flex", gap: 10, padding: "8px 0", borderBottom: "1px solid #f4f6f9", fontSize: 13, cursor: "pointer" }}
-      title="Click to see this item's sales"
-    >
+    <div onClick={() => selectItem(r.k, r.name)} title="Click to see this item's sales"
+      style={{ display: "flex", gap: 10, padding: "8px 0", borderBottom: "1px solid #f4f6f9", fontSize: 13, cursor: "pointer" }}>
       <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.name}</span>
       <span style={{ color: "#6b7280" }}>{r.p}→{r.c}</span>
       <span style={{ color: down ? "var(--over)" : "#067a57", fontWeight: 750, width: 56, textAlign: "right" }}>
@@ -237,8 +232,8 @@ const TrendsPage = () => {
   );
 
   return (
-    <ConceptLayout title="Trends" subtitle="How sales move through the year" onExport={exportMovers}>
-      <div className="bar" style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 16, flexWrap: "wrap" }}>
+    <ConceptLayout title="Trends" subtitle="Item-level sales through the year" onExport={exportMovers}>
+      <div style={{ display: "flex", gap: 12, alignItems: "center", marginBottom: 16, flexWrap: "wrap" }}>
         <div className="seg">
           <button className={metric === "revenue" ? "on" : ""} onClick={() => setMetric("revenue")}>Revenue</button>
           <button className={metric === "units" ? "on" : ""} onClick={() => setMetric("units")}>Units</button>
@@ -246,26 +241,56 @@ const TrendsPage = () => {
         <select value={brand} onChange={(e) => setBrand(e.target.value)} style={{ ...di, background: "#fff", fontWeight: 600 }}>
           {brands.map((b) => <option key={b}>{b}</option>)}
         </select>
-        <span style={{ color: "var(--muted)", fontSize: 12 }}>{productList.length} items in view</span>
+        <span style={{ color: "var(--muted)", fontSize: 12 }}>{itemList.length} items in view</span>
       </div>
 
-      {/* Sales over time */}
+      {/* Sales over time — click a month to drill in */}
       <div className="panel">
-        <h3>Sales over time <span className="per">{brand}</span></h3>
+        <h3>Sales over time <span className="per">{brand} · click a month to drill in</span></h3>
         <div style={{ padding: "16px 12px" }}>
           <ResponsiveContainer width="100%" height={240}>
-            <BarChart data={overTime} margin={{ top: 10, right: 16, left: 0, bottom: 0 }}>
+            <BarChart data={overTime} margin={{ top: 10, right: 16, left: 0, bottom: 0 }}
+              onClick={(st: any) => {
+                const lbl = st?.activeLabel;
+                const row = overTime.find((r) => r.month === lbl);
+                if (row) setFocusMonth(row.key === focusMonth ? null : row.key);
+              }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#eef2f8" vertical={false} />
               <XAxis dataKey="month" tick={{ fontSize: 11, fill: "#6b7280" }} />
               <YAxis tick={{ fontSize: 11, fill: "#6b7280" }} width={48} tickFormatter={(v) => (metric === "revenue" ? gbp(v) : String(v))} />
               <Tooltip formatter={(v: any) => (metric === "revenue" ? gbp(v as number) : `${v} units`)} />
-              <Bar dataKey={metric} fill={TEAL} radius={[4, 4, 0, 0]} />
+              <Bar dataKey={metric} fill={TEAL} radius={[4, 4, 0, 0]} cursor="pointer" />
             </BarChart>
           </ResponsiveContainer>
         </div>
       </div>
 
-      {/* Movers (clickable) */}
+      {/* Month drill-down */}
+      {focusMonth && (
+        <div className="thead-wrap" style={{ marginBottom: 15 }}>
+          <div className="cap">
+            <h3>Items sold in {monthLabel(focusMonth)} <span className="per" style={{ marginLeft: 10 }}>{monthItems.length} items</span></h3>
+            <span className="link" onClick={() => setFocusMonth(null)}>Clear ✕</span>
+          </div>
+          <div style={{ maxHeight: 300, overflowY: "auto" }}>
+            <table>
+              <thead><tr><th style={{ width: "55%" }}>Item</th><th className="num">Units</th><th className="num">Sales</th><th></th></tr></thead>
+              <tbody>
+                {monthItems.map((m) => (
+                  <tr className="vrow" key={m.key} style={{ cursor: "pointer" }} onClick={() => selectItem(m.key, m.name)}>
+                    <td>{m.name}</td>
+                    <td className="num">{m.units}</td>
+                    <td className="num">{gbp(m.revenue)}</td>
+                    <td className="num"><span className="link">view →</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Movers */}
       <div className="duo">
         <div className="panel">
           <h3>Heating up <span className="per">click an item · last 30d vs prev</span></h3>
@@ -308,24 +333,19 @@ const TrendsPage = () => {
         </div>
       </div>
 
-      {/* Product search + detail */}
+      {/* Item search + detail */}
       <div className="panel">
-        <h3>Find a product</h3>
+        <h3>Find an item</h3>
         <div style={{ padding: "14px 20px" }}>
-          <div style={{ position: "relative", maxWidth: 460 }}>
-            <input
-              value={query}
-              onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
-              onFocus={() => setOpen(true)}
-              placeholder="Search for an item…"
-              style={{ width: "100%", border: "1px solid var(--line)", borderRadius: 10, padding: "10px 12px", fontSize: 13.5, outline: "none" }}
-            />
+          <div style={{ position: "relative", maxWidth: 480 }}>
+            <input value={query} onChange={(e) => { setQuery(e.target.value); setOpen(true); }} onFocus={() => setOpen(true)}
+              placeholder="Search for an item (e.g. Fjuka Yellow)…"
+              style={{ width: "100%", border: "1px solid var(--line)", borderRadius: 10, padding: "10px 12px", fontSize: 13.5, outline: "none" }} />
             {open && matches.length > 0 && (
-              <div style={{ position: "absolute", zIndex: 5, top: "calc(100% + 4px)", left: 0, right: 0, background: "#fff", border: "1px solid var(--line)", borderRadius: 10, boxShadow: "0 10px 30px rgba(17,24,39,.12)", maxHeight: 280, overflowY: "auto" }}>
+              <div style={{ position: "absolute", zIndex: 5, top: "calc(100% + 4px)", left: 0, right: 0, background: "#fff", border: "1px solid var(--line)", borderRadius: 10, boxShadow: "0 10px 30px rgba(17,24,39,.12)", maxHeight: 300, overflowY: "auto" }}>
                 {matches.map((p) => (
-                  <div key={p.key} onClick={() => selectProduct(p.key, p.name)}
-                    style={{ padding: "9px 12px", fontSize: 13, cursor: "pointer", borderBottom: "1px solid #f4f6f9", display: "flex", gap: 8 }}
-                    onMouseDown={(e) => e.preventDefault()}>
+                  <div key={p.key} onMouseDown={(e) => e.preventDefault()} onClick={() => selectItem(p.key, p.name)}
+                    style={{ padding: "9px 12px", fontSize: 13, cursor: "pointer", borderBottom: "1px solid #f4f6f9", display: "flex", gap: 8 }}>
                     <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</span>
                     <span style={{ color: "#6b7280" }}>{p.units} sold</span>
                   </div>
@@ -336,16 +356,16 @@ const TrendsPage = () => {
         </div>
 
         {!selKey ? (
-          <div className="empty" style={{ paddingBottom: 24 }}>Search for an item, or click one in Heating up / Cooling down above.</div>
+          <div className="empty" style={{ paddingBottom: 24 }}>Search for an item, click one in the lists above, or click a month on the chart.</div>
         ) : (
           <>
             <div style={{ padding: "0 20px 6px", display: "flex", alignItems: "center", gap: 10 }}>
               <h3 style={{ border: 0, padding: 0, margin: 0 }}>{selName}</h3>
-              <button className="btn ghost" style={{ marginLeft: "auto", padding: "7px 11px" }} onClick={exportProductOrders}>Download sales CSV</button>
+              <button className="btn ghost" style={{ marginLeft: "auto", padding: "7px 11px" }} onClick={exportItemOrders}>Download sales CSV</button>
             </div>
             <div style={{ padding: "6px 12px 4px" }}>
               <ResponsiveContainer width="100%" height={200}>
-                <LineChart data={productMonthly} margin={{ top: 10, right: 16, left: 0, bottom: 0 }}>
+                <LineChart data={itemMonthly} margin={{ top: 10, right: 16, left: 0, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#eef2f8" vertical={false} />
                   <XAxis dataKey="month" tick={{ fontSize: 11, fill: "#6b7280" }} />
                   <YAxis tick={{ fontSize: 11, fill: "#6b7280" }} width={36} allowDecimals={false} />
@@ -355,7 +375,6 @@ const TrendsPage = () => {
               </ResponsiveContainer>
             </div>
 
-            {/* Period compare */}
             <div style={{ padding: "6px 20px 14px" }}>
               <p style={{ fontSize: 12.5, color: "#6b7280", margin: "6px 0 10px" }}>Compare two periods — e.g. Feb–Apr vs Nov–Jan:</p>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 15 }}>
@@ -388,18 +407,15 @@ const TrendsPage = () => {
               </div>
             </div>
 
-            {/* Order history — when sold & to whom */}
             <div className="thead-wrap" style={{ margin: "0 20px 20px", borderRadius: 12 }}>
-              <div className="cap"><h3>When it sold &amp; to whom <span className="per" style={{ marginLeft: "auto" }}>{productOrders.length} orders</span></h3></div>
+              <div className="cap"><h3>When it sold &amp; to whom <span className="per" style={{ marginLeft: "auto" }}>{itemOrders.length} orders</span></h3></div>
               <div style={{ maxHeight: 320, overflowY: "auto" }}>
                 <table>
-                  <thead><tr>
-                    <th>Date</th><th>Order</th><th className="c">Platform</th><th className="num">Qty</th><th className="num">Total</th><th>Customer</th><th>Town</th>
-                  </tr></thead>
+                  <thead><tr><th>Date</th><th>Order</th><th className="c">Platform</th><th className="num">Qty</th><th className="num">Total</th><th>Customer</th><th>Town</th></tr></thead>
                   <tbody>
-                    {productOrders.length === 0 ? (
+                    {itemOrders.length === 0 ? (
                       <tr><td colSpan={7} className="empty">No sales recorded.</td></tr>
-                    ) : productOrders.map((o) => (
+                    ) : itemOrders.map((o) => (
                       <tr className="vrow" key={o.id}>
                         <td>{fmtDay(o.ordered_at)}</td>
                         <td style={{ fontSize: 12, color: "#6b7280" }}>{o.order_number ?? o.platform_order_id}</td>
@@ -419,9 +435,8 @@ const TrendsPage = () => {
       </div>
 
       <div className="note">
-        Trends are built from captured orders, which currently start 2 April 2026. Use the brand
-        filter and search to focus; click any mover to load its sales history. Year-round patterns get
-        richer once earlier history is imported.
+        Every figure here is item-level (each size/colour counted separately). Click a month on the
+        chart, or any mover, to drill in. Built from orders captured since 2 April 2026.
       </div>
     </ConceptLayout>
   );
