@@ -31,6 +31,19 @@ const TEAL = "#0ea5a4";
 
 type Item = { key: string; name: string; productId: string };
 
+// Tiny inline sparkline from a series of numbers.
+function Sparkline({ data, color = TEAL }: { data: number[]; color?: string }) {
+  const w = 72, h = 22, n = data.length;
+  if (!n) return <svg width={w} height={h} />;
+  const max = Math.max(1, ...data);
+  const pts = data.map((v, i) => `${(i / Math.max(1, n - 1)) * (w - 2) + 1},${h - 1 - (v / max) * (h - 3)}`).join(" ");
+  return (
+    <svg width={w} height={h} style={{ display: "block" }}>
+      <polyline points={pts} fill="none" stroke={color} strokeWidth={1.6} strokeLinejoin="round" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 const TrendsPage = () => {
   const { data: orders = [] } = useOrders();
   const { data: products = [] } = useProducts();
@@ -162,6 +175,60 @@ const TrendsPage = () => {
     return itemList.filter((p) => p.name.toLowerCase().includes(q)).slice(0, 12);
   }, [itemList, query]);
 
+  // Per-variant stock, cost and readable name (for restock + dead-stock).
+  const variantMeta = useMemo(() => {
+    const m = new Map<string, { name: string; stock: number; cost: number }>();
+    for (const p of products) {
+      for (const v of p.variants) {
+        const opt = [v.option1, v.option2].filter(Boolean).join(" / ");
+        const inv = p.inventory.find((i) => i.variant_id === v.id);
+        m.set(v.id, {
+          name: opt ? `${p.name} — ${opt}` : p.name,
+          stock: inv?.total_stock ?? 0,
+          cost: (typeof v.cost_price === "number" && v.cost_price) || p.cost_price || 0,
+        });
+      }
+    }
+    return m;
+  }, [products]);
+
+  // One pass: units in last 56d / 90d and a 10-week series per item key.
+  const pass = useMemo(() => {
+    const u56: Record<string, number> = {}, u90: Record<string, number> = {}, weekly: Record<string, number[]> = {};
+    const now = Date.now();
+    for (const o of fOrders) {
+      if (!o.ordered_at) continue;
+      const r = resolve(o);
+      const days = (now - new Date(o.ordered_at).getTime()) / 864e5;
+      const q = o.quantity ?? 0;
+      if (days < 56) u56[r.key] = (u56[r.key] ?? 0) + q;
+      if (days < 90) u90[r.key] = (u90[r.key] ?? 0) + q;
+      const wk = Math.floor(days / 7);
+      if (wk >= 0 && wk < 10) (weekly[r.key] = weekly[r.key] ?? new Array(10).fill(0))[9 - wk] += q;
+    }
+    return { u56, u90, weekly };
+  }, [fOrders, itemIndex, nameById]);
+
+  // Restock suggestions + dead stock
+  const stockInsight = useMemo(() => {
+    const restock: { id: string; name: string; stock: number; perWeek: number; weeksCover: number }[] = [];
+    const dead: { id: string; name: string; stock: number; cash: number }[] = [];
+    for (const [id, meta] of variantMeta) {
+      const u56 = pass.u56[id] ?? 0;
+      const u90 = pass.u90[id] ?? 0;
+      if (u56 > 0) {
+        const perWeek = u56 / 8;
+        const weeksCover = meta.stock / Math.max(0.01, u56 / 8);
+        restock.push({ id, name: meta.name, stock: meta.stock, perWeek, weeksCover });
+      }
+      if (meta.stock > 0 && u90 === 0) dead.push({ id, name: meta.name, stock: meta.stock, cash: meta.stock * meta.cost });
+    }
+    restock.sort((a, b) => a.weeksCover - b.weeksCover);
+    dead.sort((a, b) => b.cash - a.cash);
+    const deadCash = dead.reduce((s, d) => s + d.cash, 0);
+    return { restock: restock.filter((r) => r.weeksCover < 4).slice(0, 12), dead: dead.slice(0, 12), deadCash };
+  }, [variantMeta, pass]);
+
   // Drill-down: items sold in the clicked month
   const monthItems = useMemo(() => {
     if (!focusMonth) return [] as { key: string; name: string; units: number; revenue: number }[];
@@ -207,6 +274,15 @@ const TrendsPage = () => {
   const aTot = useMemo(() => sumRange(aFrom, aTo), [itemOrders, aFrom, aTo]);
   const bTot = useMemo(() => sumRange(bFrom, bTo), [itemOrders, bFrom, bTo]);
 
+  const shiftYear = (iso: string) => {
+    const d = new Date(iso + "T00:00:00Z");
+    d.setUTCFullYear(d.getUTCFullYear() - 1);
+    return isoDate(d);
+  };
+  const aLastYear = useMemo(() => sumRange(shiftYear(aFrom), shiftYear(aTo)), [itemOrders, aFrom, aTo]);
+  // Projected next 30 days for the selected item, from its last-8-week velocity.
+  const projected30 = useMemo(() => Math.round(((pass.u56[selKey] ?? 0) / 56) * 30), [pass, selKey]);
+
   const di = { border: "1px solid var(--line)", borderRadius: 8, padding: "7px 9px", fontSize: 12.5 };
 
   const exportMovers = () =>
@@ -224,7 +300,8 @@ const TrendsPage = () => {
     <div onClick={() => selectItem(r.k, r.name)} title="Click to see this item's sales"
       style={{ display: "flex", gap: 10, padding: "8px 0", borderBottom: "1px solid #f4f6f9", fontSize: 13, cursor: "pointer" }}>
       <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.name}</span>
-      <span style={{ color: "#6b7280" }}>{r.p}→{r.c}</span>
+      <Sparkline data={pass.weekly[r.k] ?? []} color={down ? "#e11d48" : "#067a57"} />
+      <span style={{ color: "#6b7280", width: 44, textAlign: "right" }}>{r.p}→{r.c}</span>
       <span style={{ color: down ? "var(--over)" : "#067a57", fontWeight: 750, width: 56, textAlign: "right" }}>
         {down ? `▼ ${Math.round(-r.pct)}%` : r.pct === Infinity ? "new" : `▲ ${Math.round(r.pct)}%`}
       </span>
@@ -243,6 +320,31 @@ const TrendsPage = () => {
         </select>
         <span style={{ color: "var(--muted)", fontSize: 12 }}>{itemList.length} items in view</span>
       </div>
+
+      {/* Plain-English insights */}
+      {(() => {
+        const riser = movers.rising[0];
+        const cooler = movers.cooling[0];
+        const peak = overTime.reduce((a, b) => (b.revenue > (a?.revenue ?? -1) ? b : a), overTime[0]);
+        const soon = stockInsight.restock[0];
+        const insights: string[] = [];
+        if (riser) insights.push(`📈 ${riser.name} is your fastest riser — ${riser.pct === Infinity ? "newly selling" : `up ${Math.round(riser.pct)}%`} on the previous 30 days.`);
+        if (peak) insights.push(`🗓 ${peak.month} is the strongest month so far (${gbp(peak.revenue)}).`);
+        if (soon) insights.push(`⚠️ ${soon.name} has about ${soon.weeksCover.toFixed(1)} weeks of stock left at current pace — consider reordering.`);
+        if (cooler) insights.push(`📉 ${cooler.name} is cooling — down ${Math.round(-cooler.pct)}% on the previous 30 days.`);
+        if (stockInsight.deadCash > 0) insights.push(`🧊 ${gbp(stockInsight.deadCash)} is tied up in items that haven't sold in 90 days.`);
+        if (!insights.length) return null;
+        return (
+          <div className="panel" style={{ padding: "14px 18px" }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 8 }}>At a glance</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "6px 20px" }}>
+              {insights.map((t, i) => (
+                <div key={i} style={{ fontSize: 13, lineHeight: 1.5 }}>{t}</div>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* Sales over time — click a month to drill in */}
       <div className="panel">
@@ -306,6 +408,52 @@ const TrendsPage = () => {
         </div>
       </div>
 
+      {/* Restock + dead stock */}
+      <div className="duo">
+        <div className="panel">
+          <h3>Reorder soon <span className="per">stock vs recent pace</span></h3>
+          <div style={{ overflowX: "auto" }}>
+            <table>
+              <thead><tr><th style={{ width: "40%" }}>Item</th><th className="num">In stock</th><th className="num">~ / week</th><th className="num">Cover</th><th></th></tr></thead>
+              <tbody>
+                {stockInsight.restock.length === 0 ? (
+                  <tr><td colSpan={5} className="empty">Nothing running low.</td></tr>
+                ) : stockInsight.restock.map((r) => (
+                  <tr className="vrow" key={r.id} style={{ cursor: "pointer" }} onClick={() => selectItem(r.id, r.name)}>
+                    <td>{r.name}</td>
+                    <td className="num">{r.stock}</td>
+                    <td className="num">{r.perWeek.toFixed(1)}</td>
+                    <td className="num" style={{ fontWeight: 750, color: r.weeksCover < 1.5 ? "var(--over)" : r.weeksCover < 3 ? "var(--low)" : "inherit" }}>
+                      {r.weeksCover < 0.1 ? "0" : r.weeksCover.toFixed(1)}w
+                    </td>
+                    <td><Sparkline data={pass.weekly[r.id] ?? []} /></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div className="panel">
+          <h3>Dead stock <span className="per">no sales in 90 days · {gbp(stockInsight.deadCash)} tied up</span></h3>
+          <div style={{ overflowX: "auto" }}>
+            <table>
+              <thead><tr><th style={{ width: "55%" }}>Item</th><th className="num">In stock</th><th className="num">Cash</th></tr></thead>
+              <tbody>
+                {stockInsight.dead.length === 0 ? (
+                  <tr><td colSpan={3} className="empty">No dead stock — nice.</td></tr>
+                ) : stockInsight.dead.map((d) => (
+                  <tr className="vrow" key={d.id} style={{ cursor: "pointer" }} onClick={() => selectItem(d.id, d.name)}>
+                    <td>{d.name}</td>
+                    <td className="num">{d.stock}</td>
+                    <td className="num">{gbp(d.cash)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
       {/* Heatmap */}
       <div className="panel">
         <h3>Brand seasonality <span className="per">units per month · darker = stronger</span></h3>
@@ -361,6 +509,9 @@ const TrendsPage = () => {
           <>
             <div style={{ padding: "0 20px 6px", display: "flex", alignItems: "center", gap: 10 }}>
               <h3 style={{ border: 0, padding: 0, margin: 0 }}>{selName}</h3>
+              <span style={{ fontSize: 12, fontWeight: 700, color: "#067a57", background: "#e8f8f1", borderRadius: 999, padding: "4px 10px" }}>
+                ~{projected30} forecast next 30d
+              </span>
               <button className="btn ghost" style={{ marginLeft: "auto", padding: "7px 11px" }} onClick={exportItemOrders}>Download sales CSV</button>
             </div>
             <div style={{ padding: "6px 12px 4px" }}>
@@ -404,6 +555,9 @@ const TrendsPage = () => {
                   if (diff < 0) return `Period A sold ${-diff} fewer (${-pct}% down) — a quieter window for this item.`;
                   return "Both periods sold the same.";
                 })()}
+              </div>
+              <div style={{ marginTop: 8, fontSize: 12.5, color: "#6b7280" }}>
+                Period A the year before: {aLastYear.units > 0 ? `${aLastYear.units} units (${gbp(aLastYear.revenue)})` : "no history yet — import earlier orders to compare year-on-year"}
               </div>
             </div>
 
