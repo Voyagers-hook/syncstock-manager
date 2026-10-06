@@ -56,7 +56,7 @@ export function QuickSyncButton() {
       const sqVariants = sqData?.variants_created ?? 0;
 
       toast.success(
-        `✅ Sync complete! eBay: ${ebayNew} new, ${ebayUpdated} updated. ` +
+        `Sync complete! eBay: ${ebayNew} new, ${ebayUpdated} updated. ` +
           `Squarespace: ${sqNew} products, ${sqVariants} variants.`,
       );
     } catch (err: unknown) {

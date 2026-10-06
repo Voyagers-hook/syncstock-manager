@@ -229,6 +229,30 @@ const TrendsPage = () => {
     return { restock: restock.filter((r) => r.weeksCover < 4).slice(0, 12), dead: dead.slice(0, 12), deadCash };
   }, [variantMeta, pass]);
 
+  // Price position vs market (from eBay price + stored competitor delivered).
+  const priceOps = useMemo(() => {
+    const over: { label: string; pct: number; price: number; del: number }[] = [];
+    const under: { label: string; pct: number; price: number; del: number }[] = [];
+    for (const p of products) {
+      if (brand !== "All brands" && brandOf(p.name) !== brand) continue;
+      for (const v of p.variants) {
+        const l = p.channel_listings.find((x) => x.variant_id === v.id && x.channel === "ebay");
+        const price = l?.channel_price;
+        const comp = compMap[v.id];
+        if (price && comp && comp.delivered > 0) {
+          const dd = (price - comp.delivered) / comp.delivered;
+          const opt = [v.option1, v.option2].filter(Boolean).join(" / ");
+          const label = opt ? `${p.name} — ${opt}` : p.name;
+          if (dd >= 0.12) over.push({ label, pct: Math.round(dd * 100), price, del: comp.delivered });
+          else if (dd <= -0.12) under.push({ label, pct: Math.round(-dd * 100), price, del: comp.delivered });
+        }
+      }
+    }
+    over.sort((a, b) => b.pct - a.pct);
+    under.sort((a, b) => b.pct - a.pct);
+    return { over, under };
+  }, [products, compMap, brand]);
+
   // Drill-down: items sold in the clicked month
   const monthItems = useMemo(() => {
     if (!focusMonth) return [] as { key: string; name: string; units: number; revenue: number }[];
@@ -321,26 +345,45 @@ const TrendsPage = () => {
         <span style={{ color: "var(--muted)", fontSize: 12 }}>{itemList.length} items in view</span>
       </div>
 
-      {/* Plain-English insights */}
+      {/* Actionable suggestions */}
       {(() => {
-        const riser = movers.rising[0];
-        const cooler = movers.cooling[0];
         const peak = overTime.reduce((a, b) => (b.revenue > (a?.revenue ?? -1) ? b : a), overTime[0]);
-        const soon = stockInsight.restock[0];
-        const insights: string[] = [];
-        if (riser) insights.push(`📈 ${riser.name} is your fastest riser — ${riser.pct === Infinity ? "newly selling" : `up ${Math.round(riser.pct)}%`} on the previous 30 days.`);
-        if (peak) insights.push(`🗓 ${peak.month} is the strongest month so far (${gbp(peak.revenue)}).`);
-        if (soon) insights.push(`⚠️ ${soon.name} has about ${soon.weeksCover.toFixed(1)} weeks of stock left at current pace — consider reordering.`);
-        if (cooler) insights.push(`📉 ${cooler.name} is cooling — down ${Math.round(-cooler.pct)}% on the previous 30 days.`);
-        if (stockInsight.deadCash > 0) insights.push(`🧊 ${gbp(stockInsight.deadCash)} is tied up in items that haven't sold in 90 days.`);
-        if (!insights.length) return null;
+        const TONES: Record<string, { bg: string; fg: string }> = {
+          REORDER: { bg: "#fff0f3", fg: "#be123c" },
+          RISING: { bg: "#e8f8f1", fg: "#067a57" },
+          PRICE: { bg: "#e6fbfa", fg: "#0b7c7b" },
+          CLEAR: { bg: "#eff4ff", fg: "#2563eb" },
+          SLOWING: { bg: "#fff7e8", fg: "#a9640a" },
+          SEASON: { bg: "#f1f5f9", fg: "#475569" },
+        };
+        const sugg: { tag: string; text: string }[] = [];
+        for (const r of stockInsight.restock) {
+          if (r.weeksCover < 2.5) sugg.push({ tag: "REORDER", text: `${r.name} — about ${r.weeksCover.toFixed(1)} weeks of stock left at ~${r.perWeek.toFixed(1)}/week. Reorder now.` });
+          if (sugg.length >= 2) break;
+        }
+        const riser = movers.rising[0];
+        if (riser) sugg.push({ tag: "RISING", text: `${riser.name} is ${riser.pct === Infinity ? "newly selling" : `up ${Math.round(riser.pct)}%`} on the previous 30 days — keep it well stocked.` });
+        if (priceOps.over[0]) { const o = priceOps.over[0]; sugg.push({ tag: "PRICE", text: `You're ${o.pct}% above the market on ${o.label} (${money(o.price)} vs ${money(o.del)} delivered). Consider lowering to stay competitive.` }); }
+        if (priceOps.under[0]) { const u = priceOps.under[0]; sugg.push({ tag: "PRICE", text: `You're ${u.pct}% below the market on ${u.label} (${money(u.price)} vs ${money(u.del)} delivered) — room to raise your price.` }); }
+        if (stockInsight.deadCash > 0) { const names = stockInsight.dead.slice(0, 3).map((d) => d.name).join(", "); sugg.push({ tag: "CLEAR", text: `${gbp(stockInsight.deadCash)} tied up in ${stockInsight.dead.length} items with no sales in 90 days — consider discounting ${names}.` }); }
+        const cooler = movers.cooling[0];
+        if (cooler) sugg.push({ tag: "SLOWING", text: `${cooler.name} is down ${Math.round(-cooler.pct)}% on the previous 30 days — ease off reordering.` });
+        if (peak) sugg.push({ tag: "SEASON", text: `Your strongest month so far is ${peak.month} (${gbp(peak.revenue)}). Build stock ahead of it.` });
+        const shown = sugg.slice(0, 6);
+        if (!shown.length) return null;
         return (
-          <div className="panel" style={{ padding: "14px 18px" }}>
-            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 8 }}>At a glance</div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "6px 20px" }}>
-              {insights.map((t, i) => (
-                <div key={i} style={{ fontSize: 13, lineHeight: 1.5 }}>{t}</div>
-              ))}
+          <div className="panel" style={{ padding: "16px 18px" }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "var(--muted)", textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 10 }}>Suggestions</div>
+            <div style={{ display: "grid", gap: 9 }}>
+              {shown.map((s, i) => {
+                const tone = TONES[s.tag] ?? TONES.SEASON;
+                return (
+                  <div key={i} style={{ display: "flex", gap: 10, alignItems: "flex-start", fontSize: 13, lineHeight: 1.55 }}>
+                    <span style={{ flexShrink: 0, fontSize: 10, fontWeight: 800, letterSpacing: ".04em", padding: "3px 8px", borderRadius: 6, background: tone.bg, color: tone.fg, minWidth: 68, textAlign: "center" }}>{s.tag}</span>
+                    <span>{s.text}</span>
+                  </div>
+                );
+              })}
             </div>
           </div>
         );
@@ -372,7 +415,7 @@ const TrendsPage = () => {
         <div className="thead-wrap" style={{ marginBottom: 15 }}>
           <div className="cap">
             <h3>Items sold in {monthLabel(focusMonth)} <span className="per" style={{ marginLeft: 10 }}>{monthItems.length} items</span></h3>
-            <span className="link" onClick={() => setFocusMonth(null)}>Clear ✕</span>
+            <span className="link" onClick={() => setFocusMonth(null)}>Clear</span>
           </div>
           <div style={{ maxHeight: 300, overflowY: "auto" }}>
             <table>

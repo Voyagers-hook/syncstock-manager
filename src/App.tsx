@@ -52,7 +52,6 @@ const LoginScreen = ({ onLogin }: { onLogin: () => void }) => {
         boxShadow: "0 20px 60px rgba(0,0,0,0.5)",
       }}>
         <div style={{ textAlign: "center", marginBottom: "32px" }}>
-          <div style={{ fontSize: "32px", marginBottom: "8px" }}>⚓</div>
           <h1 style={{ color: "#f1f5f9", fontSize: "22px", fontWeight: 700, margin: 0 }}>
             Voyagers Hook
           </h1>

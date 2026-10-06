@@ -232,7 +232,7 @@ const SettingsPage = () => {
                         <div className="text-xs text-muted-foreground">
                           {new Date(s.started_at).toLocaleString()}
                           {s.error_message && (
-                            <span className="ml-2 text-destructive" title={s.error_message}>⚠ error</span>
+                            <span className="ml-2 text-destructive" title={s.error_message}>error</span>
                           )}
                         </div>
                       </div>
