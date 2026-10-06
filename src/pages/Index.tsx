@@ -10,6 +10,7 @@ import { FEE_RATES } from "@/hooks/use-sales";
 import InventoryTable, { StockTarget, CompTarget } from "@/components/inventory/InventoryTable";
 import StockModal from "@/components/modals/StockModal";
 import CompModal from "@/components/modals/CompModal";
+import PriceModal, { PriceTarget } from "@/components/modals/PriceModal";
 
 const gbp0 = (n: number) => `£${Math.round(n).toLocaleString("en-GB")}`;
 const money = (n: number | null | undefined) =>
@@ -84,6 +85,7 @@ const Index = () => {
 
   const [stockTarget, setStockTarget] = useState<StockTarget | null>(null);
   const [compTarget, setCompTarget] = useState<CompTarget | null>(null);
+  const [priceTarget, setPriceTarget] = useState<PriceTarget | null>(null);
 
   return (
     <ConceptLayout title="Dashboard" subtitle="Overview of everything" range={range} onRange={setRange}>
@@ -246,6 +248,7 @@ const Index = () => {
           compMap={compMap}
           onStock={setStockTarget}
           onComp={setCompTarget}
+          onPrice={setPriceTarget}
         />
       </div>
 
@@ -256,6 +259,7 @@ const Index = () => {
 
       <StockModal target={stockTarget} onClose={() => setStockTarget(null)} />
       <CompModal target={compTarget} onClose={() => setCompTarget(null)} />
+      <PriceModal target={priceTarget} onClose={() => setPriceTarget(null)} />
     </ConceptLayout>
   );
 };

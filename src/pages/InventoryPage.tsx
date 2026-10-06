@@ -6,6 +6,7 @@ import { useCompetitorMap } from "@/hooks/use-competitor-all";
 import InventoryTable, { StockTarget, CompTarget } from "@/components/inventory/InventoryTable";
 import StockModal from "@/components/modals/StockModal";
 import CompModal from "@/components/modals/CompModal";
+import PriceModal, { PriceTarget } from "@/components/modals/PriceModal";
 import { brandOf } from "@/lib/brand";
 import { downloadCsv } from "@/lib/csv";
 
@@ -18,6 +19,7 @@ const InventoryPage = () => {
   const [search, setSearch] = useState("");
   const [stockTarget, setStockTarget] = useState<StockTarget | null>(null);
   const [compTarget, setCompTarget] = useState<CompTarget | null>(null);
+  const [priceTarget, setPriceTarget] = useState<PriceTarget | null>(null);
 
   const since30 = useMemo(() => rangeSince("30"), []);
   const soldMap = useMemo(() => {
@@ -102,6 +104,7 @@ const InventoryPage = () => {
           compMap={compMap}
           onStock={setStockTarget}
           onComp={setCompTarget}
+          onPrice={setPriceTarget}
           search={search}
         />
       </div>
@@ -112,6 +115,7 @@ const InventoryPage = () => {
 
       <StockModal target={stockTarget} onClose={() => setStockTarget(null)} />
       <CompModal target={compTarget} onClose={() => setCompTarget(null)} />
+      <PriceModal target={priceTarget} onClose={() => setPriceTarget(null)} />
     </ConceptLayout>
   );
 };

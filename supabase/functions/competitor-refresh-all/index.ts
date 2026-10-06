@@ -106,27 +106,29 @@ async function appToken(appId: string, certId: string) {
   return d.access_token as string;
 }
 
-const STOP = new Set(["the", "and", "for", "with", "pack", "new", "free", "post", "fishing", "bait", "tackle"]);
+const STOP = new Set(["the", "and", "for", "with", "pack", "new", "free", "post", "fishing", "bait", "tackle", "all", "flavours", "size", "sizes", "choose"]);
 function words(s: string): string[] {
-  return (s || "").toLowerCase().replace(/[^a-z0-9. ]/g, " ").split(/\s+/).filter((w) => w.length >= 3 && !STOP.has(w));
+  return (s || "").toLowerCase().replace(/[^a-z0-9. ]/g, " ").split(/\s+/).filter((w) => w.length >= 2 && !STOP.has(w));
 }
-function relevant(qw: string[], title: string): boolean {
-  if (!qw.length) return true;
-  const tw = new Set(words(title));
-  return qw.filter((w) => tw.has(w)).length / qw.length >= 0.5;
+function relevant(qw: string[], titleLower: string): boolean {
+  const tw = new Set(words(titleLower));
+  for (const s of qw.filter((w) => /\d/.test(w))) if (!tw.has(s)) return false;
+  const plain = qw.filter((w) => !/\d/.test(w));
+  if (!plain.length) return true;
+  return plain.filter((w) => tw.has(w)).length / plain.length >= 0.6;
 }
 
 async function search(token: string, query: string) {
   const q = query.slice(0, 100);
   const qw = words(q);
-  const url = `${EBAY}/buy/browse/v1/item_summary/search?q=${encodeURIComponent(q)}&limit=40&filter=${encodeURIComponent("buyingOptions:{FIXED_PRICE}")}`;
+  const url = `${EBAY}/buy/browse/v1/item_summary/search?q=${encodeURIComponent(q)}&limit=50&filter=${encodeURIComponent("buyingOptions:{FIXED_PRICE}")}`;
   const r = await fetch(url, {
     headers: { Authorization: `Bearer ${token}`, "X-EBAY-C-MARKETPLACE-ID": "EBAY_GB", "Content-Type": "application/json" },
   });
   if (!r.ok) throw new Error(`Browse ${r.status}`);
   const d = await r.json();
   return ((d.itemSummaries ?? []) as any[])
-    .filter((it) => relevant(qw, it.title ?? ""))
+    .filter((it) => relevant(qw, (it.title ?? "").toLowerCase()))
     .map((it) => {
       const item = parseFloat(it.price?.value ?? "0");
       let postage = 0;

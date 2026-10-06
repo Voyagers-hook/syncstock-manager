@@ -77,7 +77,18 @@ export default function StockModal({
             <label>New stock level</label>
             <div className="stepper">
               <button onClick={() => setQty((q) => Math.max(0, q - 1))}>−</button>
-              <span className="q">{qty}</span>
+              <input
+                type="number"
+                min={0}
+                value={qty}
+                onChange={(e) => {
+                  const n = parseInt(e.target.value, 10);
+                  setQty(isNaN(n) ? 0 : Math.max(0, n));
+                }}
+                onFocus={(e) => e.target.select()}
+                className="q"
+                style={{ width: 80, textAlign: "center", border: "1px solid var(--line)", borderRadius: 10, padding: "6px 4px" }}
+              />
               <button onClick={() => setQty((q) => q + 1)}>+</button>
               <span style={{ color: "var(--muted)", fontSize: 12 }}>
                 was <b>{target.currentStock}</b>
