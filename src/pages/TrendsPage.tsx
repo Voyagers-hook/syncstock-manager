@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import ConceptLayout from "@/components/ConceptLayout";
 import { useOrders } from "@/hooks/use-orders";
 import { useProducts } from "@/hooks/use-products";
+import { useCompetitorMap } from "@/hooks/use-competitor-all";
 import { brandOf } from "@/lib/brand";
 import { downloadCsv } from "@/lib/csv";
 import {
@@ -47,6 +48,7 @@ function Sparkline({ data, color = TEAL }: { data: number[]; color?: string }) {
 const TrendsPage = () => {
   const { data: orders = [] } = useOrders();
   const { data: products = [] } = useProducts();
+  const { data: compMap = {} } = useCompetitorMap();
 
   const [metric, setMetric] = useState<"revenue" | "units">("revenue");
   const [brand, setBrand] = useState("All brands");
