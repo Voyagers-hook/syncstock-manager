@@ -45,6 +45,9 @@ export interface ChannelListing {
   channel_variant_id: string | null;
   last_synced_at: string | null;
   updated_at: string;
+  sq_base_price?: number | null;
+  sq_sale_price?: number | null;
+  sq_on_sale?: boolean;
 }
 
 export interface Order {
@@ -74,6 +77,9 @@ export interface ProductWithDetails {
   total_stock: number;
   ebay_price: number | null;
   squarespace_price: number | null;
+  squarespace_base_price?: number | null;
+  squarespace_sale_price?: number | null;
+  squarespace_on_sale?: boolean;
   variants: Variant[];
   inventory: Inventory[];
   channel_listings: ChannelListing[];

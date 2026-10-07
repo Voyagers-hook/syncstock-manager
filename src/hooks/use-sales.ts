@@ -4,9 +4,13 @@ import { supabase } from "@/integrations/supabase/client";
 // Fee assumptions (UK). Adjust here if eBay / Squarespace change their rates.
 // eBay: final value fee on the whole order incl. postage, plus a per-order fixed fee.
 // Squarespace: payment processing on the order total, plus a per-order fixed fee.
+// eBay (above-standard seller): 10.9% + £0.32 per order, +20% VAT on the fee, so the
+// effective rate baked in here is 10.9%*1.2 = 13.08% and £0.32*1.2 = £0.384.
+// Squarespace (Core plan, UK): payment processing 2% + £0.25 on a normal card, no VAT,
+// 0% commerce transaction fee.
 export const FEE_RATES = {
-  ebay: { pct: 0.128, fixed: 0.3 },
-  squarespace: { pct: 0.029, fixed: 0.3 },
+  ebay: { pct: 0.1308, fixed: 0.384 },
+  squarespace: { pct: 0.02, fixed: 0.25 },
 };
 
 export interface ProductSales {

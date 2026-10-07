@@ -266,7 +266,7 @@ const SalesPage = () => {
       </div>
       <div className="note">
         Gross profit is before postage &amp; packaging and uses your stored cost prices. Fees are
-        estimated (eBay 12.8% + £0.30, Squarespace 2.9% + £0.30). Export to CSV for accounting.
+        estimated (eBay 10.9% + £0.32 incl. VAT, Squarespace 2% + £0.25). Export to CSV for accounting.
       </div>
     </ConceptLayout>
   );
