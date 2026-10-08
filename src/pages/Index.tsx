@@ -5,6 +5,7 @@ import { useProducts } from "@/hooks/use-products";
 import { useOrders } from "@/hooks/use-orders";
 import { useRefunds } from "@/hooks/use-refunds";
 import { useTopSellers } from "@/hooks/use-top-sellers";
+import { useSlowMovers } from "@/hooks/use-slow-movers";
 import { useCompetitorMap } from "@/hooks/use-competitor-all";
 import { FEE_RATES } from "@/hooks/use-sales";
 import InventoryTable, { StockTarget, CompTarget } from "@/components/inventory/InventoryTable";
@@ -28,7 +29,7 @@ const Index = () => {
   const { data: refunds = [] } = useRefunds();
   const { data: compMap = {} } = useCompetitorMap();
   const { data: top = [] } = useTopSellers(5, "quantity", { from: since });
-  const { data: worst = [] } = useTopSellers(5, "quantity", { from: since, order: "asc" });
+  const { data: slow = [] } = useSlowMovers(since, 6);
 
   // Cost of goods per product (avg of its variant costs, else product cost).
   const prodCost = useMemo(() => {
@@ -165,18 +166,18 @@ const Index = () => {
         </div>
         <div className="panel">
           <h3>
-            Worst sellers <span className="per">{RANGE_LABEL[range]}</span>
+            Not selling <span className="per">in stock · {RANGE_LABEL[range]}</span>
           </h3>
-          {worst.length === 0 ? (
-            <div className="empty">No sales in this period.</div>
+          {slow.length === 0 ? (
+            <div className="empty">Nothing in stock.</div>
           ) : (
             <div className="bars">
-              {worst.map((t, i) => (
+              {slow.map((t, i) => (
                 <div className="rank" key={t.variant_key}>
                   <div className="n">{i + 1}</div>
                   <div className="nm">{t.item_name}</div>
                   <div className="q">
-                    {t.total_quantity} <small>sold</small>
+                    {t.units} <small>sold</small> · {t.stock} <small>in stock</small>
                   </div>
                 </div>
               ))}
