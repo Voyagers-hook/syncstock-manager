@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import ConceptLayout, { Range, rangeSince } from "@/components/ConceptLayout";
+import ConceptLayout, { Range, RANGE_LABEL, rangeSince } from "@/components/ConceptLayout";
+import { useTopSellers } from "@/hooks/use-top-sellers";
 import { useProducts } from "@/hooks/use-products";
 import { useOrders } from "@/hooks/use-orders";
 import { useRefunds } from "@/hooks/use-refunds";
@@ -43,6 +44,7 @@ const Index = () => {
   const { data: orders = [] } = useOrders();
   const { data: refunds = [] } = useRefunds();
   const { data: compMap = {} } = useCompetitorMap();
+  const { data: top = [] } = useTopSellers(6, "quantity", { from: since });
 
   // Cost of goods per product (avg of its variant costs, else product cost).
   const prodCost = useMemo(() => {
@@ -93,6 +95,7 @@ const Index = () => {
             market: `£${comp.delivered.toFixed(2)}`,
             over: `${Math.round(((eb - comp.delivered) / comp.delivered) * 100)}%`,
             target,
+            compTarget: { variantId: v.id, productName: nm, query: p.name, yourDelivered: eb },
           });
         }
       }
@@ -116,6 +119,19 @@ const Index = () => {
   const [compTarget, setCompTarget] = useState<CompTarget | null>(null);
   const [priceTarget, setPriceTarget] = useState<PriceTarget | null>(null);
   const [drill, setDrill] = useState<ListModalData | null>(null);
+  const [compEdit, setCompEdit] = useState<PriceTarget | null>(null);
+
+  // Clicking a drill-down row: close the list first (so nothing stacks behind), then
+  // open the competitor view for over-market items, or the price editor otherwise.
+  const onDrillRow = (row: Record<string, any>) => {
+    setDrill(null);
+    if (row.compTarget) {
+      setCompEdit(row.target ?? null);
+      setCompTarget(row.compTarget);
+    } else if (row.target) {
+      setPriceTarget(row.target);
+    }
+  };
 
   const today = new Date().toISOString().slice(0, 10);
   const openOut = () => setDrill({ title: "Out of stock", filename: `out-of-stock-${today}`, columns: [{ key: "item", label: "Item" }, { key: "stock", label: "Stock", num: true }], rows: stats.outList });
@@ -162,6 +178,25 @@ const Index = () => {
           </div>
           <span className="link" style={{ fontSize: 11 }}>view &amp; download →</span>
         </div>
+      </div>
+
+      <div className="panel">
+        <h3>
+          Top sellers <span className="per">{RANGE_LABEL[range]}</span>
+        </h3>
+        {top.length === 0 ? (
+          <div className="empty">No sales in this period.</div>
+        ) : (
+          top.map((t, i) => (
+            <div className="rank" key={t.variant_key}>
+              <div className="n">{i + 1}</div>
+              <div className="nm">{t.item_name}</div>
+              <div className="q">
+                {t.total_quantity} <small>sold</small>
+              </div>
+            </div>
+          ))
+        )}
       </div>
 
       <div className="panel">
@@ -255,9 +290,13 @@ const Index = () => {
       </div>
 
       <StockModal target={stockTarget} onClose={() => setStockTarget(null)} />
-      <CompModal target={compTarget} onClose={() => setCompTarget(null)} />
+      <CompModal
+        target={compTarget}
+        onClose={() => setCompTarget(null)}
+        onEditPrice={compEdit ? () => { setCompTarget(null); setPriceTarget(compEdit); } : undefined}
+      />
       <PriceModal target={priceTarget} onClose={() => setPriceTarget(null)} />
-      <ListModal data={drill} onClose={() => setDrill(null)} onRowClick={(row) => row.target && setPriceTarget(row.target)} />
+      <ListModal data={drill} onClose={() => setDrill(null)} onRowClick={onDrillRow} />
     </ConceptLayout>
   );
 };

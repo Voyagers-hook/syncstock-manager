@@ -7,9 +7,11 @@ const money = (n: number | null | undefined) =>
 export default function CompModal({
   target,
   onClose,
+  onEditPrice,
 }: {
   target: CompTarget | null;
   onClose: () => void;
+  onEditPrice?: () => void;
 }) {
   const { data: allRows = [], isLoading } = useCompetitorPrices(target?.variantId ?? null);
   const check = useRunCompetitorCheck();
@@ -79,6 +81,11 @@ export default function CompModal({
           >
             {check.isPending ? "Checking eBay…" : "Refresh from eBay"}
           </button>
+          {onEditPrice && (
+            <button className="btn ghost" onClick={onEditPrice}>
+              Edit price
+            </button>
+          )}
           <button className="btn ghost" onClick={onClose}>
             Close
           </button>
