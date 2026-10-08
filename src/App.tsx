@@ -10,6 +10,7 @@ import RefundsPage from "./pages/RefundsPage.tsx";
 import SalesPage from "./pages/SalesPage.tsx";
 import TrendsPage from "./pages/TrendsPage.tsx";
 import CalculatorPage from "./pages/CalculatorPage.tsx";
+import CostPricesPage from "./pages/CostPricesPage.tsx";
 import ProductsPage from "./pages/ProductsPage.tsx";
 import MergePage from "./pages/MergePage.tsx";
 import TopSellersPage from "./pages/TopSellersPage.tsx";
@@ -128,6 +129,7 @@ const App = () => {
             <Route path="/sales" element={<SalesPage />} />
             <Route path="/trends" element={<TrendsPage />} />
             <Route path="/calculator" element={<CalculatorPage />} />
+            <Route path="/cost-prices" element={<CostPricesPage />} />
             <Route path="/products" element={<ProductsPage />} />
             <Route path="/merge" element={<MergePage />} />
             <Route path="/top-sellers" element={<TopSellersPage />} />
