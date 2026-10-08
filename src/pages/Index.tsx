@@ -11,6 +11,7 @@ import InventoryTable, { StockTarget, CompTarget } from "@/components/inventory/
 import StockModal from "@/components/modals/StockModal";
 import CompModal from "@/components/modals/CompModal";
 import PriceModal, { PriceTarget } from "@/components/modals/PriceModal";
+import ListModal, { ListModalData } from "@/components/modals/ListModal";
 
 const gbp0 = (n: number) => `£${Math.round(n).toLocaleString("en-GB")}`;
 const money = (n: number | null | undefined) =>
@@ -56,19 +57,27 @@ const Index = () => {
     }
     const profit = turnover - fees - cogs;
 
-    const outOfStock = products.filter((p) => p.total_stock <= 0).length;
-    const lowStock = products.filter((p) => p.total_stock > 0 && p.total_stock <= 3).length;
+    const outList = products.filter((p) => p.total_stock <= 0).map((p) => ({ item: p.name, stock: p.total_stock }));
+    const lowList = products.filter((p) => p.total_stock > 0 && p.total_stock <= 3).map((p) => ({ item: p.name, stock: p.total_stock }));
 
-    let dearer = 0;
+    const dearList: Record<string, any>[] = [];
     for (const p of products) {
       for (const v of p.variants) {
         const listing = p.channel_listings.find((l) => l.variant_id === v.id && l.channel === "ebay");
         const eb = listing?.channel_price;
         const comp = compMap[v.id];
-        if (eb && comp && (eb - comp.delivered) / comp.delivered >= 0.06) dearer++;
+        if (eb && comp && comp.delivered > 0 && (eb - comp.delivered) / comp.delivered >= 0.06) {
+          const opt = [v.option1, v.option2].filter(Boolean).join(" / ");
+          dearList.push({
+            item: opt ? `${p.name} — ${opt}` : p.name,
+            your: `£${eb.toFixed(2)}`,
+            market: `£${comp.delivered.toFixed(2)}`,
+            over: `${Math.round(((eb - comp.delivered) / comp.delivered) * 100)}%`,
+          });
+        }
       }
     }
-    return { turnover, profit, outOfStock, lowStock, dearer };
+    return { turnover, profit, outList, lowList, dearList };
   }, [orders, products, compMap, prodCost, since]);
 
   const soldMap = useMemo(() => {
@@ -86,6 +95,12 @@ const Index = () => {
   const [stockTarget, setStockTarget] = useState<StockTarget | null>(null);
   const [compTarget, setCompTarget] = useState<CompTarget | null>(null);
   const [priceTarget, setPriceTarget] = useState<PriceTarget | null>(null);
+  const [drill, setDrill] = useState<ListModalData | null>(null);
+
+  const today = new Date().toISOString().slice(0, 10);
+  const openOut = () => setDrill({ title: "Out of stock", filename: `out-of-stock-${today}`, columns: [{ key: "item", label: "Item" }, { key: "stock", label: "Stock", num: true }], rows: stats.outList });
+  const openLow = () => setDrill({ title: "Low stock", filename: `low-stock-${today}`, columns: [{ key: "item", label: "Item" }, { key: "stock", label: "Stock", num: true }], rows: stats.lowList });
+  const openDear = () => setDrill({ title: "Dearer than market", filename: `dearer-than-market-${today}`, columns: [{ key: "item", label: "Item" }, { key: "your", label: "Your eBay", num: true }, { key: "market", label: "Market delivered", num: true }, { key: "over", label: "Over by", num: true }], rows: stats.dearList });
 
   return (
     <ConceptLayout title="Dashboard" subtitle="Overview of everything" range={range} onRange={setRange}>
@@ -100,29 +115,32 @@ const Index = () => {
             {gbp0(stats.profit)}
           </div>
         </div>
-        <div className="card">
+        <div className="card" style={{ cursor: "pointer" }} onClick={openOut}>
           <div className="lbl">
             Out of stock <span className="dot" style={{ background: "var(--out)" }} />
           </div>
           <div className="val" style={{ color: "var(--out)" }}>
-            {stats.outOfStock}
+            {stats.outList.length}
           </div>
+          <span className="link" style={{ fontSize: 11 }}>view &amp; download →</span>
         </div>
-        <div className="card">
+        <div className="card" style={{ cursor: "pointer" }} onClick={openLow}>
           <div className="lbl">
             Low stock <span className="dot" style={{ background: "var(--low)" }} />
           </div>
           <div className="val" style={{ color: "var(--low)" }}>
-            {stats.lowStock}
+            {stats.lowList.length}
           </div>
+          <span className="link" style={{ fontSize: 11 }}>view &amp; download →</span>
         </div>
-        <div className="card">
+        <div className="card" style={{ cursor: "pointer" }} onClick={openDear}>
           <div className="lbl">
             Dearer than market <span className="dot" style={{ background: "var(--over)" }} />
           </div>
           <div className="val" style={{ color: "var(--over)" }}>
-            {stats.dearer}
+            {stats.dearList.length}
           </div>
+          <span className="link" style={{ fontSize: 11 }}>view &amp; download →</span>
         </div>
       </div>
 
@@ -260,6 +278,7 @@ const Index = () => {
       <StockModal target={stockTarget} onClose={() => setStockTarget(null)} />
       <CompModal target={compTarget} onClose={() => setCompTarget(null)} />
       <PriceModal target={priceTarget} onClose={() => setPriceTarget(null)} />
+      <ListModal data={drill} onClose={() => setDrill(null)} />
     </ConceptLayout>
   );
 };

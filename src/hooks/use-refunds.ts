@@ -13,7 +13,9 @@ export interface RefundRow {
   amount: number | null;
   reason: string | null;
   restocked: boolean;
+  restock_state: "restocked" | "writeoff" | null;
   note: string | null;
+  source: string | null;
   created_at: string;
 }
 
@@ -92,7 +94,9 @@ export function useCreateRefund() {
         amount: input.amount,
         reason: input.reason,
         restocked: input.restock,
+        restock_state: input.restock ? "restocked" : "writeoff",
         note: input.note ?? null,
+        source: "manual",
       });
       if (error) throw error;
 
@@ -133,5 +137,25 @@ export function useCreateRefund() {
       );
     },
     onError: (err: any) => toast.error(`Could not record refund: ${err.message}`),
+  });
+}
+
+// Set the stock outcome label on a refund (record-only — does not change stock,
+// since stock is managed separately on Orders/Inventory).
+export function useSetRefundOutcome() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ id, state }: { id: string; state: "restocked" | "writeoff" | null }) => {
+      const { error } = await (supabase as any)
+        .from("refunds")
+        .update({ restock_state: state, restocked: state === "restocked" })
+        .eq("id", id);
+      if (error) throw error;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["refunds-list"] });
+      toast.success("Refund updated.");
+    },
+    onError: (err: any) => toast.error(`Could not update: ${err.message}`),
   });
 }
