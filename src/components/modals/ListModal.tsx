@@ -7,7 +7,7 @@ export interface ListModalData {
   filename: string;
 }
 
-export default function ListModal({ data, onClose }: { data: ListModalData | null; onClose: () => void }) {
+export default function ListModal({ data, onClose, onRowClick }: { data: ListModalData | null; onClose: () => void; onRowClick?: (row: Record<string, any>) => void }) {
   if (!data) return null;
   return (
     <div className="overlay show" onClick={(e) => e.target === e.currentTarget && onClose()}>
@@ -15,7 +15,10 @@ export default function ListModal({ data, onClose }: { data: ListModalData | nul
         <div className="mh">
           <span className="x" onClick={onClose}>×</span>
           <div className="t">{data.title}</div>
-          <div className="s">{data.rows.length} item{data.rows.length === 1 ? "" : "s"}</div>
+          <div className="s">
+            {data.rows.length} item{data.rows.length === 1 ? "" : "s"}
+            {onRowClick && data.rows.length > 0 ? " · click an item to check or edit its price" : ""}
+          </div>
         </div>
         <div style={{ maxHeight: "60vh", overflowY: "auto" }}>
           {data.rows.length === 0 ? (
@@ -27,7 +30,12 @@ export default function ListModal({ data, onClose }: { data: ListModalData | nul
               </thead>
               <tbody>
                 {data.rows.map((r, i) => (
-                  <tr className="vrow" key={i}>
+                  <tr
+                    className="vrow"
+                    key={i}
+                    style={onRowClick && r.target ? { cursor: "pointer" } : undefined}
+                    onClick={() => onRowClick && r.target && onRowClick(r)}
+                  >
                     {data.columns.map((c) => <td key={c.key} className={c.num ? "num" : ""}>{r[c.key]}</td>)}
                   </tr>
                 ))}

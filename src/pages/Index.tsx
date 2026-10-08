@@ -1,12 +1,11 @@
 import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import ConceptLayout, { Range, RANGE_LABEL, rangeSince } from "@/components/ConceptLayout";
+import ConceptLayout, { Range, rangeSince } from "@/components/ConceptLayout";
 import { useProducts } from "@/hooks/use-products";
 import { useOrders } from "@/hooks/use-orders";
 import { useRefunds } from "@/hooks/use-refunds";
-import { useTopSellers } from "@/hooks/use-top-sellers";
-import { useSlowMovers } from "@/hooks/use-slow-movers";
 import { useCompetitorMap } from "@/hooks/use-competitor-all";
+import type { ProductWithDetails } from "@/lib/types";
 import { FEE_RATES } from "@/hooks/use-sales";
 import InventoryTable, { StockTarget, CompTarget } from "@/components/inventory/InventoryTable";
 import StockModal from "@/components/modals/StockModal";
@@ -18,6 +17,22 @@ const gbp0 = (n: number) => `£${Math.round(n).toLocaleString("en-GB")}`;
 const money = (n: number | null | undefined) =>
   n === null || n === undefined ? "—" : `£${Number(n).toFixed(2)}`;
 
+// Build the price/cost editor target for a single variant (same as Inventory uses).
+function priceTargetFor(p: ProductWithDetails, v: any): PriceTarget {
+  const listings = p.channel_listings.filter((l) => l.variant_id === v.id);
+  const ebay = listings.find((l) => l.channel === "ebay");
+  const sq = listings.find((l) => l.channel === "squarespace");
+  const opt = [v.option1, v.option2].filter(Boolean).join(" / ");
+  return {
+    variantId: v.id,
+    productName: p.name,
+    variantLabel: opt || null,
+    cost: (typeof v.cost_price === "number" && v.cost_price) || p.cost_price || null,
+    ebay: ebay ? { id: ebay.id, price: ebay.channel_price } : null,
+    sq: sq ? { id: sq.id, base: sq.sq_base_price ?? sq.channel_price, sale: sq.sq_sale_price ?? null, onSale: sq.sq_on_sale ?? false } : null,
+  };
+}
+
 const Index = () => {
   const nav = useNavigate();
   const [range, setRange] = useState<Range>("30");
@@ -28,8 +43,6 @@ const Index = () => {
   const { data: orders = [] } = useOrders();
   const { data: refunds = [] } = useRefunds();
   const { data: compMap = {} } = useCompetitorMap();
-  const { data: top = [] } = useTopSellers(5, "quantity", { from: since });
-  const { data: slow = [] } = useSlowMovers(since, 6);
 
   // Cost of goods per product (avg of its variant costs, else product cost).
   const prodCost = useMemo(() => {
@@ -58,22 +71,28 @@ const Index = () => {
     }
     const profit = turnover - fees - cogs;
 
-    const outList = products.filter((p) => p.total_stock <= 0).map((p) => ({ item: p.name, stock: p.total_stock }));
-    const lowList = products.filter((p) => p.total_stock > 0 && p.total_stock <= 3).map((p) => ({ item: p.name, stock: p.total_stock }));
-
+    const outList: Record<string, any>[] = [];
+    const lowList: Record<string, any>[] = [];
     const dearList: Record<string, any>[] = [];
     for (const p of products) {
       for (const v of p.variants) {
-        const listing = p.channel_listings.find((l) => l.variant_id === v.id && l.channel === "ebay");
-        const eb = listing?.channel_price;
+        const inv = p.inventory.find((i) => i.variant_id === v.id);
+        const stock = inv?.total_stock ?? 0;
+        const opt = [v.option1, v.option2].filter(Boolean).join(" / ");
+        const nm = opt ? `${p.name} — ${opt}` : p.name;
+        const target = priceTargetFor(p, v);
+        if (stock <= 0) outList.push({ item: nm, stock, target });
+        else if (stock <= 3) lowList.push({ item: nm, stock, target });
+
+        const eb = target.ebay?.price;
         const comp = compMap[v.id];
         if (eb && comp && comp.delivered > 0 && (eb - comp.delivered) / comp.delivered >= 0.06) {
-          const opt = [v.option1, v.option2].filter(Boolean).join(" / ");
           dearList.push({
-            item: opt ? `${p.name} — ${opt}` : p.name,
+            item: nm,
             your: `£${eb.toFixed(2)}`,
             market: `£${comp.delivered.toFixed(2)}`,
             over: `${Math.round(((eb - comp.delivered) / comp.delivered) * 100)}%`,
+            target,
           });
         }
       }
@@ -142,47 +161,6 @@ const Index = () => {
             {stats.dearList.length}
           </div>
           <span className="link" style={{ fontSize: 11 }}>view &amp; download →</span>
-        </div>
-      </div>
-
-      <div className="duo">
-        <div className="panel">
-          <h3>
-            Top sellers <span className="per">{RANGE_LABEL[range]}</span>
-          </h3>
-          {top.length === 0 ? (
-            <div className="empty">No sales in this period.</div>
-          ) : (
-            top.map((t, i) => (
-              <div className="rank" key={t.variant_key}>
-                <div className="n">{i + 1}</div>
-                <div className="nm">{t.item_name}</div>
-                <div className="q">
-                  {t.total_quantity} <small>sold</small>
-                </div>
-              </div>
-            ))
-          )}
-        </div>
-        <div className="panel">
-          <h3>
-            Not selling <span className="per">in stock · {RANGE_LABEL[range]}</span>
-          </h3>
-          {slow.length === 0 ? (
-            <div className="empty">Nothing in stock.</div>
-          ) : (
-            <div className="bars">
-              {slow.map((t, i) => (
-                <div className="rank" key={t.variant_key}>
-                  <div className="n">{i + 1}</div>
-                  <div className="nm">{t.item_name}</div>
-                  <div className="q">
-                    {t.units} <small>sold</small> · {t.stock} <small>in stock</small>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
         </div>
       </div>
 
@@ -279,7 +257,7 @@ const Index = () => {
       <StockModal target={stockTarget} onClose={() => setStockTarget(null)} />
       <CompModal target={compTarget} onClose={() => setCompTarget(null)} />
       <PriceModal target={priceTarget} onClose={() => setPriceTarget(null)} />
-      <ListModal data={drill} onClose={() => setDrill(null)} />
+      <ListModal data={drill} onClose={() => setDrill(null)} onRowClick={(row) => row.target && setPriceTarget(row.target)} />
     </ConceptLayout>
   );
 };
