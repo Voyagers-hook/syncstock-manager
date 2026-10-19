@@ -38,12 +38,13 @@ export function escapeHtml(s: string): string {
 
 // Clean the product block: drop Squarespace styling, flatten nested lists, and move
 // "Label: value" lines out into spec rows.
-function tidy(nodes: Node[]): { html: string; specs: SpecRow[] } {
+function tidy(nodes: Node[], loose = false): { html: string; specs: SpecRow[] } {
   const holder = document.createElement("div");
   nodes.forEach((n) => holder.appendChild(n.cloneNode(true)));
 
   toArr(holder.querySelectorAll("*")).forEach((el) => {
     el.removeAttribute("style");
+    el.removeAttribute("class");
     Array.from(el.attributes).forEach((a) => {
       if (a.name.indexOf("data-") === 0) el.removeAttribute(a.name);
     });
@@ -66,7 +67,7 @@ function tidy(nodes: Node[]): { html: string; specs: SpecRow[] } {
       (li && holder.contains(li) && (li.textContent || "").replace(EMOJI, "").trim() === txt ? li : el).remove();
     }
   });
-  toArr(holder.querySelectorAll("gen-text")).forEach((g) => {
+  toArr(holder.querySelectorAll("gen-text, font, span:not([class])")).forEach((g) => {
     while (g.firstChild) g.parentNode!.insertBefore(g.firstChild, g);
     g.remove();
   });
@@ -134,20 +135,20 @@ function tidy(nodes: Node[]): { html: string; specs: SpecRow[] } {
     if (ps.length === 2 && li.children.length === 2) {
       const a = (ps[0].textContent || "").replace(/\s+/g, " ").trim();
       const b = (ps[1].textContent || "").replace(/\s+/g, " ").trim();
-      const ma = a.match(/^([^:]{2,32}):\s*(.{1,120})$/);
-      if (ma) {
+      const ma = a.match(/^([^:]{2,32}):\s*(.{1,60})$/);
+      if (ma && !/[.!?]$/.test(ma[2])) {
         specs.push([ma[1].trim(), ma[2].trim()]);
         const wb = b.match(/^(\d+\s*(?:years?|months?))\s+warranty$/i);
         if (wb) { specs.push(["Warranty", wb[1]]); li.remove(); } else { li.innerHTML = ""; li.appendChild(ps[1]); }
         return;
       }
-      if (a.length <= 32 && b && b.length <= 120) { specs.push([a.replace(/:$/, ""), b]); li.remove(); return; }
+      if (a.length <= 32 && b && b.length <= 60 && !/[.!?]$/.test(b)) { specs.push([a.replace(/:$/, ""), b]); li.remove(); return; }
     }
     const txt = (li.textContent || "").replace(/\s+/g, " ").trim();
     const w = txt.match(/^(\d+\s*(?:years?|months?))\s+warranty$/i);
     if (w) { specs.push(["Warranty", w[1]]); li.remove(); return; }
-    const m = txt.match(/^([^:]{2,32}):\s*(.{1,120})$/);
-    if (m) { specs.push([m[1].trim(), m[2].trim()]); li.remove(); }
+    const m = txt.match(/^([^:]{2,32}):\s*(.{1,60})$/);
+    if (m && !/[.!?]$/.test(m[2])) { specs.push([m[1].trim(), m[2].trim()]); li.remove(); }
   });
 
   let seenKF = false;
@@ -168,9 +169,11 @@ function tidy(nodes: Node[]): { html: string; specs: SpecRow[] } {
   });
   toArr(holder.querySelectorAll("h1,h2,h3,h4,p")).forEach((h) => {
     if (!holder.contains(h)) return;
-    if (/^(specifications?|specs):?$/i.test((h.textContent || "").trim())) {
+    if (/^(product )?(specifications?|specs):?$/i.test((h.textContent || "").trim())) {
       const nx = h.nextElementSibling;
-      if (specs.length || !nx || !/^(UL|OL)$/.test(nx.tagName)) h.remove();
+      const listFollows = !!nx && /^(UL|OL)$/.test(nx.tagName) && !!nx.textContent?.trim();
+      // In a loose (no template) description, keep the heading over any leftover spec bullets.
+      if (!listFollows || (specs.length && !loose)) h.remove();
     }
   });
   toArr(holder.querySelectorAll("li")).forEach((li) => { if (holder.contains(li) && !li.textContent?.trim()) li.remove(); });
@@ -231,7 +234,35 @@ export function parseListing(html: string): ParsedListing {
   };
   let end = kids.findIndex((e, i) => i > start && isPolicy(e));
   if (end < 0) end = kids.length;
-  if (start < 0 || end <= start + 1) {
+  if (start < 0) {
+    // No Voyagers Hook template at all: use the whole description as the product text.
+    let nodes = toArr(doc.body.children);
+    const isEmpty = (e: Element) => !(e.textContent || "").trim();
+    for (let guard = 0; guard < 10; guard++) {
+      while (nodes.length && isEmpty(nodes[0])) nodes = nodes.slice(1); // old banner images and spacer lines
+      while (nodes.length && isEmpty(nodes[nodes.length - 1])) nodes = nodes.slice(0, -1);
+      if (nodes.length === 1 && nodes[0].tagName === "DIV" && nodes[0].children.length) nodes = toArr(nodes[0].children);
+      else break;
+    }
+    const cut = nodes.findIndex((e) => isPolicy(e));
+    if (cut === 0) nodes = [];
+    else if (cut > 0) nodes = nodes.slice(0, cut);
+    if (!nodes.length || !nodes.some((e) => (e.textContent || "").trim())) {
+      return fail("This listing's description is empty, so there's nothing to convert.");
+    }
+    const lr = tidy(nodes, true);
+    return {
+      ok: true,
+      alreadyNew: false,
+      note: "This listing doesn't use either Voyagers Hook template, so the whole description has gone in as the product text. Check it carefully before sending.",
+      title: "",
+      condition: "",
+      free: true,
+      product: lr.html,
+      specs: lr.specs,
+    };
+  }
+  if (end <= start + 1) {
     return fail("Couldn't find the product section in this listing's description. It doesn't look like either Voyagers Hook template.");
   }
   let block = kids.slice(start + 1, end);
