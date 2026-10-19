@@ -10,6 +10,8 @@ import { toast } from "sonner";
 interface EbayItem {
   itemId: string;
   name: string;
+  stock: number;
+  onSquarespace: boolean;
 }
 
 interface ConvertStatus {
@@ -17,7 +19,7 @@ interface ConvertStatus {
   restored: boolean;
 }
 
-type Filter = "todo" | "done" | "all";
+type Filter = "todo" | "done" | "ended" | "all";
 
 function itemIdOf(channelProductId: string | null, sku: string | null): string | null {
   const fromId = channelProductId?.split("|")[1];
@@ -57,30 +59,50 @@ const ListingTemplatesPage = () => {
   });
   const status = statusQ.data ?? {};
 
+  // Live eBay item numbers. Anything SyncStock knows about that isn't live has ended.
+  const activeQ = useQuery({
+    queryKey: ["listing-template-active"],
+    queryFn: async () => new Set((await callFn<{ itemIds: string[] }>({ action: "active" })).itemIds),
+    staleTime: 5 * 60 * 1000,
+  });
+  const active = activeQ.data;
+  const isEnded = (id: string) => !!active && !active.has(id);
+
   const items = useMemo(() => {
     const map = new Map<string, EbayItem>();
     for (const p of products) {
       for (const l of p.channel_listings) {
         if (l.channel !== "ebay") continue;
         const id = itemIdOf(l.channel_product_id, l.channel_sku);
-        if (id && !map.has(id)) map.set(id, { itemId: id, name: p.name });
+        if (id && !map.has(id)) {
+          map.set(id, {
+            itemId: id,
+            name: p.name,
+            stock: p.total_stock ?? 0,
+            onSquarespace: p.channel_listings.some((c) => c.channel === "squarespace"),
+          });
+        }
       }
     }
     return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
   }, [products]);
 
   const isDone = (id: string) => !!status[id] && !status[id].restored;
-  const doneCount = items.filter((i) => isDone(i.itemId)).length;
+  const liveItems = items.filter((i) => !isEnded(i.itemId));
+  const doneCount = liveItems.filter((i) => isDone(i.itemId)).length;
+  const endedCount = items.length - liveItems.length;
 
   const visible = useMemo(() => {
     const q = search.trim().toLowerCase();
     return items.filter((i) => {
-      if (filter === "todo" && isDone(i.itemId)) return false;
-      if (filter === "done" && !isDone(i.itemId)) return false;
+      const ended = isEnded(i.itemId);
+      if (filter === "todo" && (ended || isDone(i.itemId))) return false;
+      if (filter === "done" && (ended || !isDone(i.itemId))) return false;
+      if (filter === "ended" && !ended) return false;
       return !q || i.name.toLowerCase().includes(q) || i.itemId.includes(q);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [items, search, filter, status]);
+  }, [items, search, filter, status, active]);
 
   return (
     <ConceptLayout
@@ -95,27 +117,30 @@ const ListingTemplatesPage = () => {
             <div className="cap">
               <h3>eBay listings</h3>
               <div className="seg">
-                {(["todo", "done", "all"] as Filter[]).map((f) => (
+                {(["todo", "done", "ended", "all"] as Filter[]).map((f) => (
                   <button key={f} className={filter === f ? "on" : ""} onClick={() => setFilter(f)}>
-                    {f === "todo" ? "To do" : f === "done" ? "Done" : "All"}
+                    {f === "todo" ? "To do" : f === "done" ? "Done" : f === "ended" ? `Ended${endedCount ? ` (${endedCount})` : ""}` : "All"}
                   </button>
                 ))}
               </div>
             </div>
             <div className="lt-progress">
               <span>
-                <b>{doneCount}</b> of {items.length} on the new template
+                <b>{doneCount}</b> of {liveItems.length} live listings on the new template
               </span>
               <div className="splitbar" style={{ marginTop: 8 }}>
-                <i style={{ width: items.length ? `${(doneCount / items.length) * 100}%` : 0, background: "var(--brand)" }} />
+                <i style={{ width: liveItems.length ? `${(doneCount / liveItems.length) * 100}%` : 0, background: "var(--brand)" }} />
               </div>
+              {activeQ.isError && <div style={{ marginTop: 6, color: "var(--low)" }}>Couldn't check which listings have ended.</div>}
             </div>
             <div className="lt-scroll">
               {isLoading ? (
                 <div className="empty">Loading listings…</div>
               ) : visible.length === 0 ? (
                 <div className="empty">
-                  {filter === "todo" && items.length ? "Every listing is on the new template." : "No listings match."}
+                  {filter === "ended"
+                    ? activeQ.isLoading ? "Checking eBay for ended listings…" : "No ended listings."
+                    : filter === "todo" && items.length ? "Every live listing is on the new template." : "No listings match."}
                 </div>
               ) : (
                 visible.map((i) => (
@@ -127,7 +152,9 @@ const ListingTemplatesPage = () => {
                     <span className="nm">{i.name}</span>
                     <span className="meta">
                       {i.itemId}
-                      {isDone(i.itemId) && <span className="badge on" style={{ marginLeft: 8 }}>Done</span>}
+                      {isEnded(i.itemId) ? (
+                        <span className="pill out" style={{ marginLeft: 8, padding: "2px 8px" }}>Ended</span>
+                      ) : isDone(i.itemId) && <span className="badge on" style={{ marginLeft: 8 }}>Done</span>}
                     </span>
                   </button>
                 ))
@@ -136,7 +163,16 @@ const ListingTemplatesPage = () => {
           </div>
 
           <div className="lt-editor">
-            {selected ? (
+            {selected && isEnded(selected.itemId) ? (
+              <EndedPanel
+                key={selected.itemId}
+                item={selected}
+                onRemoved={() => {
+                  setSelected(null);
+                  qc.invalidateQueries({ queryKey: ["products"] });
+                }}
+              />
+            ) : selected ? (
               <Editor
                 key={selected.itemId}
                 item={selected}
@@ -157,6 +193,88 @@ const ListingTemplatesPage = () => {
         </div>
       </div>
     </ConceptLayout>
+  );
+};
+
+const EndedPanel = ({ item, onRemoved }: { item: EbayItem; onRemoved: () => void }) => {
+  const [alsoSq, setAlsoSq] = useState(false);
+  const [confirm, setConfirm] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  const remove = async () => {
+    setBusy(true);
+    try {
+      const r = await callFn<{ removed: string[]; squarespaceDeleted: string[] }>({
+        action: "remove",
+        itemId: item.itemId,
+        deleteSquarespace: alsoSq,
+      });
+      toast.success(
+        r.squarespaceDeleted?.length
+          ? "Removed from SyncStock and deleted from Squarespace."
+          : "Removed from SyncStock.",
+      );
+      onRemoved();
+    } catch (err) {
+      toast.error((err as Error).message || "Couldn't remove this listing.");
+    } finally {
+      setBusy(false);
+      setConfirm(false);
+    }
+  };
+
+  return (
+    <div className="panel lt-ed">
+      <h3>
+        <span className="lt-ttl">{item.name}</span>
+        <a className="per link" href={`https://www.ebay.co.uk/itm/${item.itemId}`} target="_blank" rel="noreferrer">View on eBay ↗</a>
+      </h3>
+      <div className="mb">
+        <div className="lt-note warn">
+          This listing has ended on eBay, so its description can't be changed. Decide whether to restock it or remove it.
+        </div>
+        <div className="lt-ended-facts">
+          <div><span>eBay item</span><b>{item.itemId}</b></div>
+          <div><span>Stock in SyncStock</span><b>{item.stock}</b></div>
+          <div><span>On your website</span><b>{item.onSquarespace ? "Yes" : "No"}</b></div>
+        </div>
+        <div className="lt-sub" style={{ marginTop: 18 }}>Restock it</div>
+        <p className="note" style={{ marginTop: 0 }}>
+          Reorder from your supplier, then relist it from eBay's Seller Hub (Unsold &rarr; Relist). eBay gives it a new item
+          number, so run a Quick Sync afterwards to pick it up.
+        </p>
+        <div className="lt-sub" style={{ marginTop: 18 }}>Remove it</div>
+        <p className="note" style={{ marginTop: 0 }}>
+          Deletes the product from SyncStock with its stock, eBay and website links and competitor prices. Past orders stay in
+          your sales history.
+        </p>
+        {item.onSquarespace && (
+          <div className="lt-checks">
+            <label>
+              <input type="checkbox" checked={alsoSq} onChange={(e) => setAlsoSq(e.target.checked)} /> Also delete it from the
+              Squarespace website
+            </label>
+          </div>
+        )}
+      </div>
+      <div className="mf" style={{ flexWrap: "wrap", alignItems: "center" }}>
+        {confirm ? (
+          <>
+            <span className="lt-confirm">
+              {alsoSq ? "Remove from SyncStock and delete it from your website? This can't be undone." : "Remove this product from SyncStock? This can't be undone."}
+            </span>
+            <button className="btn primary" style={{ background: "var(--out)" }} disabled={busy} onClick={remove}>
+              {busy ? "Removing…" : "Yes, remove it"}
+            </button>
+            <button className="btn ghost" disabled={busy} onClick={() => setConfirm(false)}>Cancel</button>
+          </>
+        ) : (
+          <button className="btn ghost" style={{ color: "var(--out)", borderColor: "#fecdd6" }} onClick={() => setConfirm(true)}>
+            Remove product
+          </button>
+        )}
+      </div>
+    </div>
   );
 };
 

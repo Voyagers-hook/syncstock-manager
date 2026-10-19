@@ -9,6 +9,9 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 //   { action: "send", itemId, html }         -> backs up the live description, then replaces it
 //   { action: "restore", itemId }            -> puts back the most recent backup
 //   { action: "status" }                     -> which items have been converted (latest backup per item)
+//   { action: "active" }                     -> item numbers of every live eBay listing (anything else has ended)
+//   { action: "remove", itemId, deleteSquarespace } -> delete an ended listing's product from SyncStock,
+//                                               and optionally its Squarespace product. Past orders are kept.
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
@@ -38,7 +41,23 @@ Deno.serve(async (req) => {
       return json({ ok: true, items: latest });
     }
 
+    if (action === "active") {
+      const token = await getToken(supabase);
+      const ids = await activeItemIds(token);
+      if (!ids.length) throw new Error("eBay returned no active listings, so ended listings can't be worked out right now.");
+      return json({ ok: true, itemIds: ids });
+    }
+
     if (!itemId) return json({ error: "Missing eBay item number." }, 400);
+
+    if (action === "remove") {
+      // Only ended listings can be removed here, so a live listing is never deleted by mistake.
+      const live = await getItem(await getToken(supabase), itemId).catch(() => null);
+      if (live && live.status === "Active") return json({ error: "That listing is still live on eBay, so nothing was removed." }, 400);
+      const result = await removeListing(supabase, itemId, !!body.deleteSquarespace);
+      return json({ ok: true, ...result });
+    }
+
     const token = await getToken(supabase);
 
     if (action === "get") {
@@ -173,4 +192,82 @@ async function reviseDescription(token: string, itemId: string, html: string): P
   );
   if (/<Ack>Failure<\/Ack>/.test(xml)) throw new Error(ebayErrors(xml, "Error").join(" ") || "eBay rejected the update.");
   return ebayErrors(xml, "Warning");
+}
+
+async function activeItemIds(token: string): Promise<string[]> {
+  const ids = new Set<string>();
+  for (let page = 1; page <= 50; page++) {
+    const xml = await trading(
+      token,
+      "GetMyeBaySelling",
+      `<ActiveList><Include>true</Include><Pagination><EntriesPerPage>200</EntriesPerPage><PageNumber>${page}</PageNumber></Pagination></ActiveList>`,
+    );
+    if (/<Ack>Failure<\/Ack>/.test(xml)) throw new Error(ebayErrors(xml, "Error").join(" ") || "eBay couldn't list active items.");
+    const found = [...xml.matchAll(/<ItemID>(\d+)<\/ItemID>/g)].map((m) => m[1]);
+    found.forEach((id) => ids.add(id));
+    const pages = parseInt(xml.match(/<TotalNumberOfPages>(\d+)<\/TotalNumberOfPages>/)?.[1] ?? "1");
+    if (!found.length || page >= pages) break;
+  }
+  return [...ids];
+}
+
+async function removeListing(supabase: any, itemId: string, deleteSquarespace: boolean) {
+  // Find the SyncStock product(s) behind this eBay item.
+  const { data: eb1, error: e1 } = await supabase
+    .from("channel_listings").select("variant_id").eq("channel", "ebay").like("channel_product_id", `%|${itemId}|%`);
+  if (e1) throw new Error(e1.message);
+  const { data: eb2, error: e1b } = await supabase
+    .from("channel_listings").select("variant_id").eq("channel", "ebay").eq("channel_sku", itemId);
+  if (e1b) throw new Error(e1b.message);
+  const variantIds = [...new Set([...(eb1 ?? []), ...(eb2 ?? [])].map((r: any) => r.variant_id))];
+  if (!variantIds.length) throw new Error("SyncStock has no product linked to that eBay listing.");
+  const { data: vs, error: e2 } = await supabase.from("variants").select("product_id").in("id", variantIds);
+  if (e2) throw new Error(e2.message);
+  const productIds = [...new Set((vs ?? []).map((r: any) => r.product_id))];
+  if (productIds.length > 3) throw new Error("That eBay listing is linked to more products than expected, so nothing was removed. Check it in Merge first.");
+  const { data: prods } = await supabase.from("products").select("id, name").in("id", productIds);
+
+  // Squarespace products linked to those SyncStock products.
+  const { data: allVars } = await supabase.from("variants").select("id").in("product_id", productIds);
+  const { data: sq } = await supabase
+    .from("channel_listings")
+    .select("channel_product_id")
+    .eq("channel", "squarespace")
+    .in("variant_id", (allVars ?? []).map((v: any) => v.id));
+  const sqIds = [...new Set((sq ?? []).map((r: any) => r.channel_product_id).filter(Boolean))] as string[];
+
+  // Delete on Squarespace first. If that fails, stop before touching SyncStock.
+  const sqDeleted: string[] = [];
+  if (deleteSquarespace && sqIds.length) {
+    const { data: k } = await supabase.from("sync_secrets").select("value").eq("key", "squarespace_api_key").maybeSingle();
+    const key = k?.value ?? Deno.env.get("SQUARESPACE_API_KEY");
+    if (!key) throw new Error("Squarespace API key not set, so nothing was removed.");
+    for (const id of sqIds) {
+      const r = await fetch(`https://api.squarespace.com/1.0/commerce/products/${id}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${key}`, "User-Agent": "SyncStock/2.0" },
+      });
+      if (!r.ok && r.status !== 404) {
+        const t = await r.text();
+        throw new Error(`Squarespace wouldn't delete the product (${r.status}), so nothing was removed. ${t.slice(0, 200)}`);
+      }
+      sqDeleted.push(id);
+    }
+  }
+
+  // Keep past orders in sales history, just unlinked from the product.
+  const { error: e3 } = await supabase.from("orders").update({ product_id: null }).in("product_id", productIds);
+  if (e3) throw new Error("Couldn't unlink past orders, so nothing was removed: " + e3.message);
+  // Variants, stock, channel links and competitor prices go with the product.
+  const { error: e4 } = await supabase.from("products").delete().in("id", productIds);
+  if (e4) throw new Error(e4.message);
+
+  const names = (prods ?? []).map((p: any) => p.name);
+  await supabase.from("sync_log").insert({
+    sync_type: "listing_remove",
+    status: "completed",
+    details: { itemId, products: names, squarespaceDeleted: sqDeleted, squarespaceKept: deleteSquarespace ? [] : sqIds },
+    source: "edge_function",
+  });
+  return { removed: names, squarespaceDeleted: sqDeleted, squarespaceKept: deleteSquarespace ? [] : sqIds };
 }
