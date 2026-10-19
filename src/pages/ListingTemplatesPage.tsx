@@ -297,6 +297,9 @@ const Editor = ({ item, status, onChanged }: EditorProps) => {
   const [product, setProduct] = useState("");
   const [specs, setSpecs] = useState<SpecRow[]>([]);
   const [canConvert, setCanConvert] = useState(false);
+  const [descMode, setDescMode] = useState<"text" | "html">("text");
+  const [loadCount, setLoadCount] = useState(0);
+  const descRef = useRef<HTMLDivElement>(null);
   const [view, setView] = useState<"desk" | "phone">("desk");
   const [confirm, setConfirm] = useState<"send" | "restore" | null>(null);
   const [busy, setBusy] = useState(false);
@@ -319,6 +322,7 @@ const Editor = ({ item, status, onChanged }: EditorProps) => {
       setCondition(r.condition || (d.condition && !/^new$/i.test(d.condition) ? d.condition : "Brand new"));
       setFree(r.free);
       setProduct(r.product);
+      setLoadCount((n) => n + 1);
       setSpecs(r.specs);
     } catch (err) {
       const e = err as Error;
@@ -332,6 +336,18 @@ const Editor = ({ item, status, onChanged }: EditorProps) => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [item.itemId]);
+
+  // Fill the text editor when a listing loads or when switching back from HTML mode.
+  useEffect(() => {
+    if (descMode === "text" && descRef.current) descRef.current.innerHTML = product;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loadCount, descMode, canConvert]);
+
+  const fmt = (cmd: string, value?: string) => {
+    descRef.current?.focus();
+    document.execCommand(cmd, false, value);
+    if (descRef.current) setProduct(descRef.current.innerHTML);
+  };
 
   const html = useMemo(
     () => buildListing({ title, condition, free, showSpecs, hideRepeats, product, specs }),
@@ -439,6 +455,50 @@ const Editor = ({ item, status, onChanged }: EditorProps) => {
                 {!specs.some((r) => /^brand$/i.test(r[0])) && (
                   <div className="note" style={{ marginTop: 8 }}>Brand is added automatically from the first word of the title.</div>
                 )}
+              </div>
+            )}
+
+            <div className="lt-desc-head">
+              <div className="lt-sub" style={{ margin: 0 }}>Description</div>
+              <div className="seg">
+                <button className={descMode === "text" ? "on" : ""} onClick={() => setDescMode("text")}>Text</button>
+                <button className={descMode === "html" ? "on" : ""} onClick={() => setDescMode("html")}>HTML</button>
+              </div>
+            </div>
+            {descMode === "text" ? (
+              <>
+                <div className="lt-toolbar" onMouseDown={(e) => e.preventDefault()}>
+                  <button type="button" onClick={() => fmt("bold")} title="Bold"><b>B</b></button>
+                  <button type="button" onClick={() => fmt("formatBlock", "h3")} title="Heading">Heading</button>
+                  <button type="button" onClick={() => fmt("formatBlock", "p")} title="Normal text">Normal text</button>
+                  <button type="button" onClick={() => fmt("insertUnorderedList")} title="Bullet list">• List</button>
+                  <button type="button" onClick={() => fmt("undo")} title="Undo">Undo</button>
+                </div>
+                <div
+                  ref={descRef}
+                  className="lt-desc"
+                  contentEditable
+                  suppressContentEditableWarning
+                  onInput={(e) => setProduct((e.target as HTMLDivElement).innerHTML)}
+                  onPaste={(e) => {
+                    // Paste as plain text so website styling doesn't come along.
+                    e.preventDefault();
+                    document.execCommand("insertText", false, e.clipboardData.getData("text/plain"));
+                  }}
+                />
+              </>
+            ) : (
+              <textarea
+                className="lt-desc-html"
+                spellCheck={false}
+                value={product}
+                onChange={(e) => setProduct(e.target.value)}
+                aria-label="Description HTML"
+              />
+            )}
+            {hideRepeats && showSpecs && (
+              <div className="note" style={{ margin: "6px 2px 16px" }}>
+                Feature bullets that repeat the numbers are hidden in the preview. Untick "Hide features that repeat the numbers" to keep them.
               </div>
             )}
 
