@@ -33,6 +33,7 @@ interface FormState {
   sku: string;
   stock: string;
   costPrice: string;
+  postageCost: string; // what it costs you to post on eBay; only used for the profit figures, never sent anywhere
   price: string;
   webPrice: string;
   webPriceTouched: boolean;
@@ -79,6 +80,7 @@ const blank = (): FormState => ({
   sku: "",
   stock: "1",
   costPrice: "",
+  postageCost: "",
   price: "",
   webPrice: "",
   webPriceTouched: false,
@@ -688,9 +690,9 @@ const Section = ({ n, title, badge, warn, children }: { n: number; title: string
 );
 
 const ProductSection = ({ n, f, set }: { n: number; f: FormState; set: SetFn }) => {
-  const price = num(f.price), web = num(f.webPrice) || price, cost = num(f.costPrice);
+  const price = num(f.price), web = num(f.webPrice) || price, cost = num(f.costPrice), post = num(f.postageCost);
   const eFee = fee("ebay", price), sFee = fee("squarespace", web);
-  const eProfit = price - eFee - cost, sProfit = web - sFee - cost;
+  const eProfit = price - eFee - cost - post, sProfit = web - sFee - cost;
   const pct = (p: number, of: number) => (of > 0 ? ` · ${Math.round((p / of) * 100)}%` : "");
   const done = !!f.title.trim() && (f.hasVariations || num(f.price) > 0);
   return (
@@ -717,9 +719,15 @@ const ProductSection = ({ n, f, set }: { n: number; f: FormState; set: SetFn }) 
         <div className="fld"><label>Stock</label><input inputMode="numeric" value={f.hasVariations ? "Set per option" : f.stock} disabled={f.hasVariations} onChange={(e) => set("stock", e.target.value)} /></div>
         <div className="fld"><label>Cost price</label><input inputMode="decimal" value={f.costPrice} onChange={(e) => set("costPrice", e.target.value)} placeholder="£" /></div>
       </div>
+      {f.hasVariations && (
+        <div className="fld" style={{ maxWidth: 260 }}>
+          <label>Your eBay postage cost <span className="cl-count">not shown to buyers</span></label>
+          <input inputMode="decimal" value={f.postageCost} placeholder="£" onChange={(e) => set("postageCost", e.target.value)} />
+        </div>
+      )}
       {!f.hasVariations && (
         <>
-          <div className="cl-row-title">
+          <div className="cl-row3">
             <div className="fld">
               <label>eBay price</label>
               <input
@@ -736,12 +744,21 @@ const ProductSection = ({ n, f, set }: { n: number; f: FormState; set: SetFn }) 
               <label>Website price <span className="cl-count">eBay minus 10%</span></label>
               <input inputMode="decimal" value={f.webPrice} placeholder="£" onChange={(e) => { set("webPrice", e.target.value); set("webPriceTouched", true); }} />
             </div>
+            <div className="fld">
+              <label>Your eBay postage cost <span className="cl-count">not shown to buyers</span></label>
+              <input inputMode="decimal" value={f.postageCost} placeholder="£" onChange={(e) => set("postageCost", e.target.value)} />
+            </div>
           </div>
           {price > 0 && (
             <div className="cl-profit">
-              <div><span>eBay profit{cost ? "" : " (add a cost price)"}</span><b className={eProfit < 0 ? "neg" : ""}>{gbp(eProfit)}{pct(eProfit, price)}</b></div>
+              <div><span>eBay profit{!cost ? " (add a cost price)" : !post && f.free ? " (add postage)" : ""}</span><b className={eProfit < 0 ? "neg" : ""}>{gbp(eProfit)}{pct(eProfit, price)}</b></div>
               <div><span>Website profit</span><b className={sProfit < 0 ? "neg" : ""}>{gbp(sProfit)}{pct(sProfit, web)}</b></div>
               <div><span>eBay fees (est.)</span><b className="plain">{gbp(eFee)}</b></div>
+            </div>
+          )}
+          {price > 0 && (
+            <div className="note" style={{ marginTop: 8 }}>
+              eBay profit is after eBay fees, the cost price and your postage. Website profit is after Squarespace fees and the cost price; buyers pay postage on the website.
             </div>
           )}
         </>
@@ -960,8 +977,12 @@ const VariationsSection = ({ n, f, set }: { n: number; f: FormState; set: SetFn 
   const web = f.toWebsite;
   const cols = [
     "minmax(110px,1.2fr)", "minmax(110px,1.2fr)", "84px", "84px",
-    ...(web && f.onSale ? ["84px"] : []), "64px", ...(web ? ["78px"] : []), "100px", "40px",
+    ...(web && f.onSale ? ["84px"] : []), "64px", ...(web ? ["78px"] : []), "100px", "84px", "40px",
   ].join(" ");
+  const ebayProfit = (v: VariationRow) => {
+    const pr = num(v.price);
+    return pr > 0 ? pr - fee("ebay", pr) - num(f.costPrice) - num(f.postageCost) : null;
+  };
   return (
     <Section n={n} title="Variations" badge={f.hasVariations && f.variations.length ? `${f.variations.length} options` : undefined}>
       <div className="lt-checks" style={{ marginTop: 0 }}>
@@ -989,7 +1010,7 @@ const VariationsSection = ({ n, f, set }: { n: number; f: FormState; set: SetFn 
           <div className="cl-vars">
             <div className="cl-var head" style={{ gridTemplateColumns: cols }}>
               <span>{f.variationName || "Option"}</span><span>SKU</span><span>eBay price</span><span>Website</span>
-              {web && f.onSale && <span>Sale</span>}<span>Stock</span>{web && <span>Weight kg</span>}<span>Photo</span><span />
+              {web && f.onSale && <span>Sale</span>}<span>Stock</span>{web && <span>Weight kg</span>}<span>Photo</span><span>eBay profit</span><span />
             </div>
             {f.variations.map((v, i) => (
               <div className="cl-var" key={i} style={{ gridTemplateColumns: cols }}>
@@ -1004,6 +1025,10 @@ const VariationsSection = ({ n, f, set }: { n: number; f: FormState; set: SetFn 
                   <option value="">None</option>
                   {f.photos.map((_, j) => <option key={j} value={String(j)}>Photo {j + 1}</option>)}
                 </select>
+                {(() => {
+                  const pf = ebayProfit(v);
+                  return <span className={`cl-vprofit${pf !== null && pf < 0 ? " neg" : ""}`}>{pf === null ? "-" : gbp(pf)}</span>;
+                })()}
                 <button className="btn ghost" aria-label="Remove option" onClick={() => set("variations", f.variations.filter((_, j) => j !== i))}>×</button>
               </div>
             ))}

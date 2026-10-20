@@ -204,7 +204,7 @@ tbody tr.vrow:hover td{background:#fafcff}
 .cl-specifics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:0 12px}
 .cl-specifics input.cl-missing{border-color:#f5c26b;background:#fffaf0}
 .cl-vars{border:1px solid var(--line);border-radius:12px;overflow-x:auto;margin-bottom:12px}
-.cl-var{display:grid;grid-template-columns:minmax(110px,1.2fr) minmax(110px,1.2fr) 90px 90px 70px 100px 40px;gap:8px;padding:8px 10px;border-top:1px solid #f1f3f7;min-width:680px;align-items:center}
+.cl-var{display:grid;grid-template-columns:minmax(110px,1.2fr) minmax(110px,1.2fr) 90px 90px 70px 100px 40px;gap:8px;padding:8px 10px;border-top:1px solid #f1f3f7;min-width:780px;align-items:center}
 .cl-var.head{border-top:0;background:#f7f9fc;font-size:11px;font-weight:750;color:var(--muted);text-transform:uppercase;letter-spacing:.03em}
 .cl-var input,.cl-var select{border:1px solid var(--line);border-radius:8px;padding:7px 9px;font:inherit;font-size:13px;min-width:0;background:#fff}
 .cl-var .btn{padding:6px 10px}
@@ -249,3 +249,4 @@ tbody tr.vrow:hover td{background:#fafcff}
 .cl-sugg button:hover{border-color:var(--brand);color:var(--brand)}
 .cl-sugg button.all{border-style:solid;font-weight:700}
 .cl-sec .fld input.cl-missing{border-color:#f5c26b;background:#fffaf0}
+.cl-vprofit{font-weight:750;font-size:13px;color:var(--good);text-align:right}.cl-vprofit.neg{color:var(--out)}
