@@ -51,6 +51,7 @@ interface FormState {
   websiteVisible: boolean;
   weightKg: string;
   // website-only details
+  headline: string; // heading on the eBay description; the eBay title can carry extra search keywords
   webTitle: string;
   webSameDesc: boolean;
   webProduct: string;
@@ -95,6 +96,7 @@ const blank = (): FormState => ({
   storePageId: "",
   websiteVisible: false,
   weightKg: "",
+  headline: "",
   webTitle: "",
   webSameDesc: true,
   webProduct: "",
@@ -235,8 +237,8 @@ const CreateListingPage = () => {
     [f.brand, f.specs],
   );
   const ebayHtml = useMemo(
-    () => buildListing({ title: f.title, condition: conditionLabel, free: f.free, showSpecs: true, hideRepeats: true, product: f.product, specs: specsForTemplate }),
-    [f.title, conditionLabel, f.free, f.product, specsForTemplate],
+    () => buildListing({ title: f.headline.trim() || f.title, condition: conditionLabel, free: f.free, showSpecs: true, hideRepeats: true, product: f.product, specs: specsForTemplate }),
+    [f.headline, f.title, conditionLabel, f.free, f.product, specsForTemplate],
   );
   const webHtml = useMemo(
     () => websiteHtml(f.webSameDesc ? f.product : f.webProduct, specsForTemplate, f.title),
@@ -282,7 +284,7 @@ const CreateListingPage = () => {
             storePageId: f.storePageId,
             tags: f.tags,
             visible: f.websiteVisible,
-            title: f.webTitle.trim() || undefined,
+            title: f.webTitle.trim() || f.headline.trim() || undefined,
             urlSlug: f.urlSlug.trim() || undefined,
             weightKg: num(f.weightKg) || undefined,
             lengthCm: num(f.lengthCm) || undefined,
@@ -426,10 +428,11 @@ const CreateListingPage = () => {
       }>({ action: "item", itemId: id });
       let product = "";
       let specs: SpecRow[] = [];
+      let headline = "";
       try {
         const d = await callFn<{ description: string }>("listing-template", { action: "get", itemId: id });
         const p = parseListing(d.description);
-        if (p.ok) { product = p.product; specs = p.specs; }
+        if (p.ok) { product = p.product; specs = p.specs; if (p.title && p.title.trim() !== (it.title || "").trim()) headline = p.title.trim(); }
       } catch { /* description is optional */ }
       const specifics: Record<string, string> = {};
       for (const [k, v] of Object.entries(it.specifics || {})) specifics[k] = v.join("; ");
@@ -437,6 +440,7 @@ const CreateListingPage = () => {
         ...blank(),
         storePageId: f.storePageId,
         title: it.title || "",
+        headline,
         condition: CONDITIONS.some((c) => c.id === it.conditionId) ? it.conditionId! : "1000",
         brand: (it.specifics?.Brand || [])[0] || "",
         price: it.price ? it.price.toFixed(2) : "",
@@ -693,8 +697,8 @@ const ProductSection = ({ n, f, set }: { n: number; f: FormState; set: SetFn }) 
     <Section n={n} title="Product" badge={done ? "Done" : undefined}>
       <div className="cl-row-title">
         <div className="fld">
-          <label>Title <span className={`cl-count${f.title.length > 80 ? " over" : ""}`}>{f.title.length} / 80</span></label>
-          <input value={f.title} onChange={(e) => set("title", e.target.value)} placeholder="Brand, product, size, colour" />
+          <label>eBay title <span className={`cl-count${f.title.length > 80 ? " over" : ""}`}>{f.title.length} / 80</span></label>
+          <input value={f.title} onChange={(e) => set("title", e.target.value)} placeholder="Brand, product, size, colour, plus search keywords" />
         </div>
         <div className="fld">
           <label>Condition</label>
@@ -702,6 +706,10 @@ const ProductSection = ({ n, f, set }: { n: number; f: FormState; set: SetFn }) 
             {CONDITIONS.map((c) => <option key={c.id} value={c.id}>{c.label}</option>)}
           </select>
         </div>
+      </div>
+      <div className="fld">
+        <label>Heading on the description <span className="cl-count">{f.headline ? `${f.headline.length} characters` : "Same as the eBay title if left blank"}</span></label>
+        <input value={f.headline} onChange={(e) => set("headline", e.target.value)} placeholder={f.title || "The clean product name, without the extra keywords"} />
       </div>
       <div className="cl-row4">
         <div className="fld"><label>Brand</label><input value={f.brand} onChange={(e) => set("brand", e.target.value)} /></div>
@@ -1032,7 +1040,7 @@ const WebsiteSection = ({ n, f, set, setup }: { n: number; f: FormState; set: Se
   const typed = tagText.trim().toLowerCase();
   const matches = typed ? all.filter((t) => !have.has(t.tag) && t.tag.includes(typed)).slice(0, 8) : [];
   const price = num(f.webPrice) || num(f.price);
-  const slugPreview = (f.urlSlug || f.webTitle || f.title).toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  const slugPreview = (f.urlSlug || f.webTitle || f.headline || f.title).toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
   const page = setup?.storePages.find((p) => p.id === f.storePageId);
 
   return (
@@ -1053,8 +1061,8 @@ const WebsiteSection = ({ n, f, set, setup }: { n: number; f: FormState; set: Se
       </div>
 
       <div className="fld">
-        <label>Website title <span className="cl-count">{f.webTitle ? `${f.webTitle.length} / 200` : "Same as eBay if left blank"}</span></label>
-        <input value={f.webTitle} onChange={(e) => set("webTitle", e.target.value)} placeholder={f.title || "Product name on the website"} />
+        <label>Website title <span className="cl-count">{f.webTitle ? `${f.webTitle.length} / 200` : "Same as the description heading if left blank"}</span></label>
+        <input value={f.webTitle} onChange={(e) => set("webTitle", e.target.value)} placeholder={f.headline || f.title || "Product name on the website"} />
       </div>
 
       <div className="lt-sub" style={{ marginTop: 6 }}>Tags</div>
@@ -1139,7 +1147,7 @@ const WebsiteSection = ({ n, f, set, setup }: { n: number; f: FormState; set: Se
       <div className="lt-sub" style={{ marginTop: 18 }}>Search engines (optional)</div>
       <div className="fld">
         <label>SEO title <span className={`cl-count${f.seoTitle.length > 60 ? " over" : ""}`}>{f.seoTitle.length} / 60</span></label>
-        <input value={f.seoTitle} onChange={(e) => set("seoTitle", e.target.value)} placeholder={f.webTitle || f.title} />
+        <input value={f.seoTitle} onChange={(e) => set("seoTitle", e.target.value)} placeholder={f.webTitle || f.headline || f.title} />
       </div>
       <div className="fld">
         <label>SEO description <span className={`cl-count${f.seoDescription.length > 160 ? " over" : ""}`}>{f.seoDescription.length} / 160</span></label>
@@ -1165,7 +1173,7 @@ const PreviewPanel = ({ ebayHtml, webHtml, f }: { ebayHtml: string; webHtml: str
   const lowest = (xs: number[]) => (xs.filter((n) => n > 0).length ? Math.min(...xs.filter((n) => n > 0)) : 0);
   const minVar = f.hasVariations ? lowest(f.variations.map((v) => num(v.price))) : num(f.price);
   const minWeb = f.hasVariations ? lowest(f.variations.map((v) => num(v.webPrice) || num(v.price))) : num(f.webPrice) || num(f.price);
-  const webDoc = `<!doctype html><html><head><meta charset="utf-8"><style>body{font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0;padding:22px;color:#26241f;line-height:1.6;font-size:14px}img{width:100%;border-radius:8px;background:#f1ece3}h1{font-size:22px;margin:16px 0 4px}.p{font-size:18px;font-weight:700;margin-bottom:14px}table{border-collapse:collapse;width:100%}td{border-top:1px solid #e4ddd0;padding:6px 4px}h3{font-size:14px;text-transform:uppercase;letter-spacing:.05em}</style></head><body>${f.photos[0] ? `<img src="${escapeHtml(f.photos[0])}">` : ""}<h1>${escapeHtml(f.webTitle || f.title || "Product title")}</h1><div class="p">${minWeb > 0 ? (f.hasVariations ? "From " : "") + (f.onSale && !f.hasVariations && num(f.salePrice) > 0 ? `<s style="opacity:.5;font-weight:500">${gbp(minWeb)}</s> ${gbp(num(f.salePrice))}` : gbp(minWeb)) : ""}</div>${f.tags.length ? `<div style="font-size:11px;color:#7a746a;margin-bottom:12px">Tags: ${escapeHtml(f.tags.join(", "))}</div>` : ""}${webHtml || "<p>Description goes here.</p>"}</body></html>`;
+  const webDoc = `<!doctype html><html><head><meta charset="utf-8"><style>body{font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0;padding:22px;color:#26241f;line-height:1.6;font-size:14px}img{width:100%;border-radius:8px;background:#f1ece3}h1{font-size:22px;margin:16px 0 4px}.p{font-size:18px;font-weight:700;margin-bottom:14px}table{border-collapse:collapse;width:100%}td{border-top:1px solid #e4ddd0;padding:6px 4px}h3{font-size:14px;text-transform:uppercase;letter-spacing:.05em}</style></head><body>${f.photos[0] ? `<img src="${escapeHtml(f.photos[0])}">` : ""}<h1>${escapeHtml(f.webTitle || f.headline || f.title || "Product title")}</h1><div class="p">${minWeb > 0 ? (f.hasVariations ? "From " : "") + (f.onSale && !f.hasVariations && num(f.salePrice) > 0 ? `<s style="opacity:.5;font-weight:500">${gbp(minWeb)}</s> ${gbp(num(f.salePrice))}` : gbp(minWeb)) : ""}</div>${f.tags.length ? `<div style="font-size:11px;color:#7a746a;margin-bottom:12px">Tags: ${escapeHtml(f.tags.join(", "))}</div>` : ""}${webHtml || "<p>Description goes here.</p>"}</body></html>`;
   const stock = f.hasVariations ? f.variations.reduce((s, v) => s + Math.floor(num(v.stock)), 0) : Math.floor(num(f.stock));
   return (
     <>
