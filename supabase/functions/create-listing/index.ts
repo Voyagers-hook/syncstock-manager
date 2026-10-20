@@ -19,6 +19,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2.49.1";
 //   create { listing }           -> lists on the ticked shops, then saves the product in SyncStock
 //   drafts / save_draft / delete_draft
 //   delete_sq_product { productId } -> removes a Squarespace product (used to clean up tests)
+//   website_tags                 -> every tag used on the website, most used first
 
 const cors = {
   "Access-Control-Allow-Origin": "*",
@@ -27,7 +28,7 @@ const cors = {
 const EBAY = "https://api.ebay.com";
 const SQ = "https://api.squarespace.com/1.0";
 
-interface Variation { value: string; sku: string; price: number; webPrice: number; stock: number; photo?: number }
+interface Variation { value: string; sku: string; price: number; webPrice: number; stock: number; photo?: number; weightKg?: number; salePrice?: number }
 interface Listing {
   title: string;
   sku: string;
@@ -46,7 +47,19 @@ interface Listing {
   variations?: Variation[];
   toEbay: boolean;
   toWebsite: boolean;
-  website?: { storePageId: string; tags: string[]; urlSlug?: string; weightKg?: number; visible: boolean };
+  website?: {
+    storePageId: string;
+    tags: string[];
+    visible: boolean;
+    title?: string;                // website product name (defaults to the eBay title)
+    urlSlug?: string;
+    weightKg?: number;             // used for every option unless the option has its own
+    lengthCm?: number; widthCm?: number; heightCm?: number;
+    onSale?: boolean;
+    salePrice?: number;            // single item; options use their own salePrice
+    seoTitle?: string;
+    seoDescription?: string;
+  };
 }
 
 Deno.serve(async (req) => {
@@ -79,6 +92,25 @@ Deno.serve(async (req) => {
       const key = await sqKey(supabase);
       const r = await fetch(`${SQ}/commerce/products/${encodeURIComponent(String(body.productId))}`, { method: "DELETE", headers: sqHeaders(key) });
       return json({ ok: r.ok || r.status === 404, status: r.status });
+    }
+
+    if (action === "website_tags") {
+      const key = await sqKey(supabase);
+      const counts = new Map<string, number>();
+      let cursor: string | null = null;
+      for (let page = 0; page < 40; page++) {
+        const r = await fetch(`${SQ}/commerce/products${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`, { headers: sqHeaders(key) });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error("Couldn't read the website's products: " + (d?.message || r.status));
+        for (const p of d.products ?? []) for (const t of p.tags ?? []) {
+          const k = String(t).trim().toLowerCase();
+          if (k) counts.set(k, (counts.get(k) ?? 0) + 1);
+        }
+        cursor = d.pagination?.nextPageCursor || null;
+        if (!d.pagination?.hasNextPage || !cursor) break;
+      }
+      const tags = [...counts].sort((a, b) => b[1] - a[1]).map(([tag, count]) => ({ tag, count }));
+      return json({ ok: true, tags });
     }
 
     if (action === "setup") {
@@ -194,12 +226,13 @@ Deno.serve(async (req) => {
       // Creates the product hidden on Squarespace, reads back what was saved, then deletes it.
       const L = body.listing as Listing;
       L.website = { ...(L.website as any), visible: false };
+      fillSkus(L, null);
       const sq = await createSquarespace(supabase, L);
       const key = await sqKey(supabase);
       const back = await (await fetch(`${SQ}/commerce/products/${sq.productId}`, { headers: sqHeaders(key) })).json();
       const del = await fetch(`${SQ}/commerce/products/${sq.productId}`, { method: "DELETE", headers: sqHeaders(key) });
       const prod = back.products?.[0] ?? back;
-      return json({ ok: true, created: sq, savedDescription: prod.description, savedVisible: prod.isVisible, images: (prod.images ?? []).length, deleted: del.ok });
+      return json({ ok: true, created: sq, saved: { name: prod.name, description: prod.description, visible: prod.isVisible, tags: prod.tags, urlSlug: prod.urlSlug, seo: prod.seoOptions, images: (prod.images ?? []).length, variants: (prod.variants ?? []).map((v: any) => ({ sku: v.sku, attributes: v.attributes, pricing: v.pricing, weight: v.shippingMeasurements?.weight?.value, image: v.image?.id ?? null })) }, deleted: del.ok });
     }
 
     if (action === "create") {
@@ -220,12 +253,16 @@ Deno.serve(async (req) => {
         result.ebay = { itemId: ebayItemId, url: `https://www.ebay.co.uk/itm/${ebayItemId}`, warnings: r.warnings, fees: r.fees };
       }
 
+      // Squarespace needs a SKU on every option, and SyncStock needs them unique. Fill blanks
+      // with the same pattern the eBay Quick Sync uses (<itemId>-<option>, or the item id).
+      fillSkus(L, ebayItemId);
+
       // 2. Squarespace. If this fails after eBay worked, still save the product so stock syncs on eBay.
-      let sq: { productId: string; variants: { id: string; sku: string }[]; url?: string } | null = null;
+      let sq: Awaited<ReturnType<typeof createSquarespace>> | null = null;
       if (L.toWebsite) {
         try {
           sq = await createSquarespace(supabase, L);
-          result.website = { productId: sq.productId, url: sq.url, photosUploaded: (sq as any).photosUploaded };
+          result.website = { productId: sq.productId, url: sq.url, photosUploaded: sq.photosUploaded, optionPhotos: sq.optionPhotos, notes: sq.notes };
         } catch (e: any) {
           result.websiteError = e.message;
           if (!L.toEbay) return json({ error: "Squarespace didn't accept the product: " + e.message }, 400);
@@ -464,35 +501,55 @@ function sqHeaders(key: string, extra: Record<string, string> = {}) {
   return { Authorization: `Bearer ${key}`, "User-Agent": "SyncStock/2.0", ...extra };
 }
 
+function fillSkus(L: Listing, ebayItemId: string | null) {
+  const base = ebayItemId ?? `WEB${Date.now().toString(36).toUpperCase()}`;
+  if (L.variations?.length) {
+    for (const v of L.variations) if (!v.sku?.trim()) v.sku = `${base}-${v.value}`.slice(0, 60);
+  } else if (!L.sku?.trim()) L.sku = base;
+}
+
+function slugify(s: string) {
+  return s.toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 200);
+}
+
 async function createSquarespace(supabase: any, L: Listing) {
   const key = await sqKey(supabase);
   const vars = L.variations ?? [];
   const w = L.website!;
-  const weight = w.weightKg && w.weightKg > 0 ? { shippingMeasurements: { weight: { unit: "KILOGRAM", value: w.weightKg }, dimensions: { unit: "CENTIMETER", length: 0, width: 0, height: 0 } } } : {};
+  const measure = (kg?: number) =>
+    kg && kg > 0
+      ? { shippingMeasurements: { weight: { unit: "KILOGRAM", value: kg }, dimensions: { unit: "CENTIMETER", length: w.lengthCm || 0, width: w.widthCm || 0, height: w.heightCm || 0 } } }
+      : {};
+  const pricing = (price: number, sale?: number) => {
+    const p: Record<string, unknown> = { basePrice: { currency: "GBP", value: money(price) } };
+    if (w.onSale && sale && sale > 0 && sale < price) { p.onSale = true; p.salePrice = { currency: "GBP", value: money(sale) }; }
+    return p;
+  };
   const variants = vars.length
     ? vars.map((v) => ({
-        sku: v.sku || undefined,
-        pricing: { basePrice: { currency: "GBP", value: money(v.webPrice || v.price) } },
+        sku: v.sku,
+        pricing: pricing(v.webPrice || v.price, v.salePrice),
         stock: { quantity: Math.max(0, Math.floor(v.stock || 0)), unlimited: false },
         attributes: { [L.variationName || "Option"]: v.value },
-        ...weight,
+        ...measure(v.weightKg || w.weightKg),
       }))
     : [{
-        sku: L.sku || undefined,
-        pricing: { basePrice: { currency: "GBP", value: money(L.webPrice || L.price) } },
+        sku: L.sku,
+        pricing: pricing(L.webPrice || L.price, w.salePrice),
         stock: { quantity: Math.max(0, Math.floor(L.stock || 0)), unlimited: false },
-        ...weight,
+        ...measure(w.weightKg),
       }];
   const payload: Record<string, unknown> = {
     type: "PHYSICAL",
     storePageId: w.storePageId,
-    name: L.title.trim(),
+    name: (w.title || L.title).trim().slice(0, 200),
     description: L.websiteHtml || "",
     isVisible: !!w.visible,
-    tags: (w.tags || []).filter(Boolean),
+    tags: [...new Set((w.tags || []).map((t) => t.trim()).filter(Boolean))].slice(0, 100),
     variants,
   };
-  if (w.urlSlug) payload.urlSlug = w.urlSlug;
+  const slug = slugify(w.urlSlug || "");
+  if (slug) payload.urlSlug = slug;
   if (vars.length) payload.variantAttributes = [L.variationName || "Option"];
   const r = await fetch(`${SQ}/commerce/products`, {
     method: "POST",
@@ -502,25 +559,64 @@ async function createSquarespace(supabase: any, L: Listing) {
   const d = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(`${r.status} ${d?.message || JSON.stringify(d).slice(0, 300)}`);
 
+  const notes: string[] = [];
+  const created = (d.variants ?? []).map((v: any) => ({ id: v.id as string, sku: (v.sku || "") as string, attrs: v.attributes ?? {} }));
+
+  // SEO title and description can only be set after the product exists.
+  if (w.seoTitle?.trim() || w.seoDescription?.trim()) {
+    const u = await fetch(`${SQ}/commerce/products/${d.id}`, {
+      method: "POST",
+      headers: sqHeaders(key, { "Content-Type": "application/json" }),
+      body: JSON.stringify({ seoOptions: { title: (w.seoTitle || "").trim(), description: (w.seoDescription || "").trim() } }),
+    });
+    if (!u.ok) notes.push("The SEO title and description didn't save; add them in Squarespace.");
+  }
+
   // Photos: copy each eBay-hosted photo to Squarespace (in order, main photo first).
-  let photosUploaded = 0;
+  const imageIds: (string | null)[] = [];
   for (const [i, url] of (L.photos || []).slice(0, 12).entries()) {
+    let id: string | null = null;
     try {
       const img = await fetch(url);
-      if (!img.ok) continue;
-      const blob = await img.blob();
-      const form = new FormData();
-      form.append("file", new File([blob], `photo-${i + 1}.jpg`, { type: blob.type || "image/jpeg" }));
-      const up = await fetch(`${SQ}/commerce/products/${d.id}/images`, { method: "POST", headers: sqHeaders(key), body: form });
-      if (up.ok) photosUploaded++;
+      if (img.ok) {
+        const blob = await img.blob();
+        const form = new FormData();
+        form.append("file", new File([blob], `photo-${i + 1}.jpg`, { type: blob.type || "image/jpeg" }));
+        const up = await fetch(`${SQ}/commerce/products/${d.id}/images`, { method: "POST", headers: sqHeaders(key), body: form });
+        if (up.ok) id = (await up.json().catch(() => ({})))?.imageId ?? "uploaded";
+      }
     } catch { /* keep going; the product exists either way */ }
+    imageIds.push(id);
   }
-  return {
-    productId: d.id as string,
-    url: d.url as string | undefined,
-    photosUploaded,
-    variants: (d.variants ?? []).map((v: any) => ({ id: v.id as string, sku: (v.sku || "") as string, attrs: v.attributes ?? {} })),
-  };
+  const photosUploaded = imageIds.filter(Boolean).length;
+  if (photosUploaded < Math.min(12, (L.photos || []).length)) notes.push(`${Math.min(12, L.photos.length) - photosUploaded} photo(s) didn't copy to the website.`);
+
+  // Option photos: link each option to its photo. Squarespace processes uploads in the
+  // background, so wait briefly and retry.
+  let optionPhotos = 0;
+  const wanted = vars
+    .map((v) => ({ v, imageId: v.photo !== undefined && v.photo !== null ? imageIds[v.photo] : null }))
+    .filter((x) => x.imageId && x.imageId !== "uploaded");
+  if (wanted.length) {
+    for (const { v, imageId } of wanted) {
+      const variant = created.find((c: any) => c.sku === v.sku) ?? created.find((c: any) => Object.values(c.attrs).map(String).includes(v.value));
+      if (!variant) continue;
+      let ok = false;
+      for (let attempt = 0; attempt < 4 && !ok; attempt++) {
+        if (attempt) await new Promise((res) => setTimeout(res, 2500));
+        const a = await fetch(`https://api.squarespace.com/${attempt % 2 ? "1.0" : "v2"}/commerce/products/${d.id}/variants/${variant.id}/image`, {
+          method: "POST",
+          headers: sqHeaders(key, { "Content-Type": "application/json" }),
+          body: JSON.stringify({ imageId }),
+        });
+        ok = a.ok;
+      }
+      if (ok) optionPhotos++;
+    }
+    if (optionPhotos < wanted.length) notes.push(`${wanted.length - optionPhotos} option photo(s) didn't link; pick them in Squarespace.`);
+  }
+
+  return { productId: d.id as string, url: d.url as string | undefined, photosUploaded, optionPhotos, notes, variants: created };
 }
 
 async function saveToSyncStock(supabase: any, L: Listing, ebayItemId: string | null, sq: any) {

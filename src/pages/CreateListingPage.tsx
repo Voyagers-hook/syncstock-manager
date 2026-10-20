@@ -10,7 +10,7 @@ import { toast } from "sonner";
 // Squarespace website, and saves it in SyncStock as ONE product with both shops linked.
 // All the work happens in the create-listing edge function.
 
-interface VariationRow { value: string; sku: string; price: string; webPrice: string; stock: string; photo: string }
+interface VariationRow { value: string; sku: string; price: string; webPrice: string; stock: string; photo: string; weightKg?: string; salePrice?: string }
 interface Aspect { name: string; required: boolean; mode: string; multi: boolean; usage: string; forVariations: boolean; values: string[] }
 interface Category { id: string; name: string; path: string }
 interface Setup {
@@ -20,7 +20,7 @@ interface Setup {
 interface VerifyResult { success: boolean; errors: string[]; warnings: string[]; fees: { name: string; amount: number }[]; problems: string[] }
 interface CreateResult {
   ebay?: { itemId: string; url: string; warnings: string[] };
-  website?: { productId: string; url?: string; photosUploaded: number };
+  website?: { productId: string; url?: string; photosUploaded: number; optionPhotos?: number; notes?: string[] };
   websiteError?: string;
   syncstock: { productId: string; variants: number; links: number; problems: string[] };
 }
@@ -50,6 +50,19 @@ interface FormState {
   storePageId: string;
   websiteVisible: boolean;
   weightKg: string;
+  // website-only details
+  webTitle: string;
+  webSameDesc: boolean;
+  webProduct: string;
+  tags: string[];
+  urlSlug: string;
+  lengthCm: string;
+  widthCm: string;
+  heightCm: string;
+  onSale: boolean;
+  salePrice: string;
+  seoTitle: string;
+  seoDescription: string;
 }
 
 const CONDITIONS: { id: string; label: string }[] = [
@@ -82,9 +95,21 @@ const blank = (): FormState => ({
   storePageId: "",
   websiteVisible: false,
   weightKg: "",
+  webTitle: "",
+  webSameDesc: true,
+  webProduct: "",
+  tags: [],
+  urlSlug: "",
+  lengthCm: "",
+  widthCm: "",
+  heightCm: "",
+  onSale: false,
+  salePrice: "",
+  seoTitle: "",
+  seoDescription: "",
 });
 
-const emptyVar = (): VariationRow => ({ value: "", sku: "", price: "", webPrice: "", stock: "1", photo: "" });
+const emptyVar = (): VariationRow => ({ value: "", sku: "", price: "", webPrice: "", stock: "1", photo: "", weightKg: "", salePrice: "" });
 
 async function callFn<T = unknown>(fn: string, body: Record<string, unknown>): Promise<T> {
   const { data, error } = await supabase.functions.invoke(fn, { body });
@@ -213,7 +238,10 @@ const CreateListingPage = () => {
     () => buildListing({ title: f.title, condition: conditionLabel, free: f.free, showSpecs: true, hideRepeats: true, product: f.product, specs: specsForTemplate }),
     [f.title, conditionLabel, f.free, f.product, specsForTemplate],
   );
-  const webHtml = useMemo(() => websiteHtml(f.product, specsForTemplate, f.title), [f.product, specsForTemplate, f.title]);
+  const webHtml = useMemo(
+    () => websiteHtml(f.webSameDesc ? f.product : f.webProduct, specsForTemplate, f.title),
+    [f.webSameDesc, f.product, f.webProduct, specsForTemplate, f.title],
+  );
 
   const listing = useMemo(() => {
     const specifics: Record<string, string[]> = {};
@@ -227,6 +255,8 @@ const CreateListingPage = () => {
           webPrice: num(v.webPrice) || num(v.price),
           stock: Math.floor(num(v.stock)),
           ...(v.photo !== "" ? { photo: Number(v.photo) } : {}),
+          ...(num(v.weightKg || "") > 0 ? { weightKg: num(v.weightKg || "") } : {}),
+          ...(f.onSale && num(v.salePrice || "") > 0 ? { salePrice: num(v.salePrice || "") } : {}),
         }))
       : [];
     return {
@@ -248,7 +278,21 @@ const CreateListingPage = () => {
       toEbay: f.toEbay,
       toWebsite: f.toWebsite,
       website: f.toWebsite
-        ? { storePageId: f.storePageId, tags: f.brand ? [f.brand] : [], visible: f.websiteVisible, weightKg: num(f.weightKg) || undefined }
+        ? {
+            storePageId: f.storePageId,
+            tags: f.tags,
+            visible: f.websiteVisible,
+            title: f.webTitle.trim() || undefined,
+            urlSlug: f.urlSlug.trim() || undefined,
+            weightKg: num(f.weightKg) || undefined,
+            lengthCm: num(f.lengthCm) || undefined,
+            widthCm: num(f.widthCm) || undefined,
+            heightCm: num(f.heightCm) || undefined,
+            onSale: f.onSale,
+            salePrice: f.onSale && !f.hasVariations ? num(f.salePrice) || undefined : undefined,
+            seoTitle: f.seoTitle.trim() || undefined,
+            seoDescription: f.seoDescription.trim() || undefined,
+          }
         : undefined,
     };
   }, [f, ebayHtml, webHtml]);
@@ -266,6 +310,18 @@ const CreateListingPage = () => {
     { label: "eBay category", ok: !!f.category, show: f.toEbay },
     { label: missingSpecifics.length ? `${missingSpecifics.join(", ")} ${missingSpecifics.length === 1 ? "is" : "are"} required` : "Item specifics", ok: !!f.category && !aspectsQ.isLoading && missingSpecifics.length === 0, show: f.toEbay },
     { label: "Website shop page", ok: !!f.storePageId, show: f.toWebsite },
+    {
+      label: "Website weight (sets the postage)",
+      ok: f.hasVariations ? f.variations.length > 0 && f.variations.every((v) => num(v.weightKg || "") > 0 || num(f.weightKg) > 0) : num(f.weightKg) > 0,
+      hint: "Squarespace works out postage from the weight",
+      show: f.toWebsite,
+    },
+    {
+      label: "Website sale price",
+      ok: !f.onSale || (f.hasVariations ? f.variations.some((v) => num(v.salePrice || "") > 0) : num(f.salePrice) > 0 && num(f.salePrice) < (num(f.webPrice) || num(f.price))),
+      hint: "Lower than the website price",
+      show: f.toWebsite && f.onSale,
+    },
     { label: "Delivery and returns", ok: !!setup, hint: setupQ.isError ? "Couldn't load your eBay policies" : undefined, show: f.toEbay },
     { label: "Where to list", ok: f.toEbay || f.toWebsite, show: true },
   ];
@@ -410,6 +466,9 @@ const CreateListingPage = () => {
   };
 
   const drafts = draftsQ.data ?? [];
+  // Sections are numbered in the order they show, so hiding eBay or website ones doesn't leave gaps.
+  let sectionNo = 0;
+  const num_ = (_name: string) => ++sectionNo;
 
   return (
     <ConceptLayout title="Create listing" subtitle="One form, listed on eBay and your website">
@@ -459,12 +518,24 @@ const CreateListingPage = () => {
       ) : (
         <div className="cl-grid">
           <div>
-            <ProductSection f={f} set={set} />
-            <PhotosSection f={f} set={set} />
-            <DescriptionSection key={formKey} f={f} set={set} />
-            {f.toEbay && <CategorySection f={f} set={set} />}
+            <Section n={num_("where")} title="Where to list">
+              <div className="cl-where">
+                <label className={f.toEbay ? "on" : ""}>
+                  <input type="checkbox" checked={f.toEbay} onChange={(e) => set("toEbay", e.target.checked)} />
+                  <span><b>eBay</b><small>Listed with your template, live straight away</small></span>
+                </label>
+                <label className={f.toWebsite ? "on" : ""}>
+                  <input type="checkbox" checked={f.toWebsite} onChange={(e) => set("toWebsite", e.target.checked)} />
+                  <span><b>Website (Squarespace)</b><small>{f.websiteVisible ? "Shown on the website straight away" : "Added hidden so you can finish it in Squarespace"}</small></span>
+                </label>
+              </div>
+            </Section>
+            <ProductSection n={num_("product")} f={f} set={set} />
+            <PhotosSection n={num_("photos")} f={f} set={set} />
+            <DescriptionSection key={formKey} n={num_("description")} f={f} set={set} />
+            {f.toEbay && <CategorySection n={num_("category")} f={f} set={set} />}
             {f.toEbay && (
-              <Section n={5} title="Item specifics" badge={!f.category ? undefined : aspectsQ.isLoading ? "Loading…" : missingSpecifics.length ? `${missingSpecifics.length} required left` : "Done"} warn={missingSpecifics.length > 0}>
+              <Section n={num_("specifics")} title="Item specifics" badge={!f.category ? undefined : aspectsQ.isLoading ? "Loading…" : missingSpecifics.length ? `${missingSpecifics.length} required left` : "Done"} warn={missingSpecifics.length > 0}>
                 {!f.category ? (
                   <div className="note" style={{ margin: 0 }}>Pick an eBay category first. eBay then says which details it wants.</div>
                 ) : aspectsQ.isError ? (
@@ -500,9 +571,9 @@ const CreateListingPage = () => {
                 )}
               </Section>
             )}
-            <VariationsSection f={f} set={set} />
+            <VariationsSection n={num_("variations")} f={f} set={set} />
             {f.toEbay && (
-              <Section n={7} title="Delivery and returns" badge={setup ? "Your usual" : undefined}>
+              <Section n={num_("delivery")} title="Delivery and returns" badge={setup ? "Your usual" : undefined}>
                 {setupQ.isLoading ? (
                   <div className="note" style={{ margin: 0 }}>Loading your eBay policies…</div>
                 ) : setupQ.isError ? (
@@ -525,38 +596,7 @@ const CreateListingPage = () => {
                 )}
               </Section>
             )}
-            <Section n={8} title="Where to list">
-              <div className="cl-where">
-                <label className={f.toEbay ? "on" : ""}>
-                  <input type="checkbox" checked={f.toEbay} onChange={(e) => set("toEbay", e.target.checked)} />
-                  <span><b>eBay</b><small>Listed with your template, live straight away</small></span>
-                </label>
-                <label className={f.toWebsite ? "on" : ""}>
-                  <input type="checkbox" checked={f.toWebsite} onChange={(e) => set("toWebsite", e.target.checked)} />
-                  <span><b>Website (Squarespace)</b><small>{f.websiteVisible ? "Shown on the website straight away" : "Added hidden so you can check it first"}</small></span>
-                </label>
-              </div>
-              {f.toWebsite && (
-                <div className="cl-row3" style={{ marginTop: 14 }}>
-                  <div className="fld">
-                    <label>Website shop page</label>
-                    <select value={f.storePageId} onChange={(e) => set("storePageId", e.target.value)}>
-                      <option value="">Choose…</option>
-                      {(setup?.storePages ?? []).map((p) => (
-                        <option key={p.id} value={p.id}>{p.title}{p.enabled ? "" : " (hidden page)"}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="fld">
-                    <label>Weight in kg (for website postage)</label>
-                    <input inputMode="decimal" value={f.weightKg} placeholder="Optional" onChange={(e) => set("weightKg", e.target.value)} />
-                  </div>
-                  <div className="lt-checks" style={{ alignSelf: "end", marginBottom: 22 }}>
-                    <label><input type="checkbox" checked={f.websiteVisible} onChange={(e) => set("websiteVisible", e.target.checked)} /> Show it straight away</label>
-                  </div>
-                </div>
-              )}
-            </Section>
+            {f.toWebsite && <WebsiteSection key={"w" + formKey} n={num_("website")} f={f} set={set} setup={setup} />}
           </div>
 
           <aside className="cl-side">
@@ -643,14 +683,14 @@ const Section = ({ n, title, badge, warn, children }: { n: number; title: string
   </div>
 );
 
-const ProductSection = ({ f, set }: { f: FormState; set: SetFn }) => {
+const ProductSection = ({ n, f, set }: { n: number; f: FormState; set: SetFn }) => {
   const price = num(f.price), web = num(f.webPrice) || price, cost = num(f.costPrice);
   const eFee = fee("ebay", price), sFee = fee("squarespace", web);
   const eProfit = price - eFee - cost, sProfit = web - sFee - cost;
   const pct = (p: number, of: number) => (of > 0 ? ` · ${Math.round((p / of) * 100)}%` : "");
   const done = !!f.title.trim() && (f.hasVariations || num(f.price) > 0);
   return (
-    <Section n={1} title="Product" badge={done ? "Done" : undefined}>
+    <Section n={n} title="Product" badge={done ? "Done" : undefined}>
       <div className="cl-row-title">
         <div className="fld">
           <label>Title <span className={`cl-count${f.title.length > 80 ? " over" : ""}`}>{f.title.length} / 80</span></label>
@@ -702,7 +742,7 @@ const ProductSection = ({ f, set }: { f: FormState; set: SetFn }) => {
   );
 };
 
-const PhotosSection = ({ f, set }: { f: FormState; set: SetFn }) => {
+const PhotosSection = ({ n, f, set }: { n: number; f: FormState; set: SetFn }) => {
   const [uploading, setUploading] = useState(0);
   const [over, setOver] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -744,7 +784,7 @@ const PhotosSection = ({ f, set }: { f: FormState; set: SetFn }) => {
   };
 
   return (
-    <Section n={2} title="Photos" badge={f.photos.length ? `${f.photos.length} added` : undefined}>
+    <Section n={n} title="Photos" badge={f.photos.length ? `${f.photos.length} added` : undefined}>
       <div className="cl-photos">
         {f.photos.map((u, i) => (
           <div className="cl-photo" key={u + i}>
@@ -778,25 +818,23 @@ const PhotosSection = ({ f, set }: { f: FormState; set: SetFn }) => {
   );
 };
 
-const DescriptionSection = ({ f, set }: { f: FormState; set: SetFn }) => {
+// Text editor with a small toolbar and an HTML mode. Pastes as plain text so supplier styling doesn't come along.
+const RichEditor = ({ value, onChange, label, placeholder }: { value: string; onChange: (v: string) => void; label: string; placeholder: string }) => {
   const [mode, setMode] = useState<"text" | "html">("text");
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (mode === "text" && ref.current) ref.current.innerHTML = f.product;
+    if (mode === "text" && ref.current) ref.current.innerHTML = value;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode]);
-  const fmt = (cmd: string, value?: string) => {
+  const fmt = (cmd: string, v?: string) => {
     ref.current?.focus();
-    document.execCommand(cmd, false, value);
-    if (ref.current) set("product", ref.current.innerHTML);
+    document.execCommand(cmd, false, v);
+    if (ref.current) onChange(ref.current.innerHTML);
   };
-  const setSpec = (i: number, col: 0 | 1, v: string) =>
-    set("specs", f.specs.map((r, j) => (j === i ? ((col === 0 ? [v, r[1]] : [r[0], v]) as SpecRow) : r)));
-  const done = f.product.replace(/<[^>]+>/g, "").trim().length > 0;
   return (
-    <Section n={3} title="Description" badge={done ? "Done" : undefined}>
+    <>
       <div className="lt-desc-head">
-        <div className="lt-sub" style={{ margin: 0 }}>About the product</div>
+        <div className="lt-sub" style={{ margin: 0 }}>{label}</div>
         <div className="seg">
           <button className={mode === "text" ? "on" : ""} onClick={() => setMode("text")}>Text</button>
           <button className={mode === "html" ? "on" : ""} onClick={() => setMode("html")}>HTML</button>
@@ -816,8 +854,8 @@ const DescriptionSection = ({ f, set }: { f: FormState; set: SetFn }) => {
             className="lt-desc"
             contentEditable
             suppressContentEditableWarning
-            data-placeholder="What it is, what it's for, and the key features. Paste from the supplier's site if you like; the styling is stripped."
-            onInput={(e) => set("product", (e.target as HTMLDivElement).innerHTML)}
+            data-placeholder={placeholder}
+            onInput={(e) => onChange((e.target as HTMLDivElement).innerHTML)}
             onPaste={(e) => {
               e.preventDefault();
               document.execCommand("insertText", false, e.clipboardData.getData("text/plain"));
@@ -825,8 +863,24 @@ const DescriptionSection = ({ f, set }: { f: FormState; set: SetFn }) => {
           />
         </>
       ) : (
-        <textarea className="lt-desc-html" spellCheck={false} value={f.product} onChange={(e) => set("product", e.target.value)} aria-label="Description HTML" />
+        <textarea className="lt-desc-html" spellCheck={false} value={value} onChange={(e) => onChange(e.target.value)} aria-label={`${label} HTML`} />
       )}
+    </>
+  );
+};
+
+const DescriptionSection = ({ n, f, set }: { n: number; f: FormState; set: SetFn }) => {
+  const setSpec = (i: number, col: 0 | 1, v: string) =>
+    set("specs", f.specs.map((r, j) => (j === i ? ((col === 0 ? [v, r[1]] : [r[0], v]) as SpecRow) : r)));
+  const done = f.product.replace(/<[^>]+>/g, "").trim().length > 0;
+  return (
+    <Section n={n} title="Description" badge={done ? "Done" : undefined}>
+      <RichEditor
+        value={f.product}
+        onChange={(v) => set("product", v)}
+        label="About the product"
+        placeholder="What it is, what it's for, and the key features. Paste from the supplier's site if you like; the styling is stripped."
+      />
       <div className="lt-specs" style={{ marginTop: 16, marginBottom: 0 }}>
         <div className="lt-sub">The numbers</div>
         {f.specs.map((r, i) => (
@@ -843,7 +897,7 @@ const DescriptionSection = ({ f, set }: { f: FormState; set: SetFn }) => {
   );
 };
 
-const CategorySection = ({ f, set }: { f: FormState; set: SetFn }) => {
+const CategorySection = ({ n, f, set }: { n: number; f: FormState; set: SetFn }) => {
   const [q, setQ] = useState("");
   const [cats, setCats] = useState<Category[] | null>(null);
   const [busy, setBusy] = useState(false);
@@ -860,7 +914,7 @@ const CategorySection = ({ f, set }: { f: FormState; set: SetFn }) => {
     }
   };
   return (
-    <Section n={4} title="eBay category" badge={f.category ? "Picked" : undefined}>
+    <Section n={n} title="eBay category" badge={f.category ? "Picked" : undefined}>
       {f.category && (
         <div className="cl-picked">
           <b>{f.category.name}</b>
@@ -892,11 +946,16 @@ const CategorySection = ({ f, set }: { f: FormState; set: SetFn }) => {
   );
 };
 
-const VariationsSection = ({ f, set }: { f: FormState; set: SetFn }) => {
+const VariationsSection = ({ n, f, set }: { n: number; f: FormState; set: SetFn }) => {
   const upd = (i: number, k: keyof VariationRow, v: string) =>
     set("variations", f.variations.map((r, j) => (j === i ? { ...r, [k]: v, ...(k === "price" && (!r.webPrice || r.webPrice === suggestWeb(r.price)) ? { webPrice: suggestWeb(v) } : {}) } : r)));
+  const web = f.toWebsite;
+  const cols = [
+    "minmax(110px,1.2fr)", "minmax(110px,1.2fr)", "84px", "84px",
+    ...(web && f.onSale ? ["84px"] : []), "64px", ...(web ? ["78px"] : []), "100px", "40px",
+  ].join(" ");
   return (
-    <Section n={6} title="Variations" badge={f.hasVariations && f.variations.length ? `${f.variations.length} options` : undefined}>
+    <Section n={n} title="Variations" badge={f.hasVariations && f.variations.length ? `${f.variations.length} options` : undefined}>
       <div className="lt-checks" style={{ marginTop: 0 }}>
         <label>
           <input
@@ -920,16 +979,19 @@ const VariationsSection = ({ f, set }: { f: FormState; set: SetFn }) => {
             <input value={f.variationName} onChange={(e) => set("variationName", e.target.value)} placeholder="Colour, Size, Weight…" />
           </div>
           <div className="cl-vars">
-            <div className="cl-var head">
-              <span>{f.variationName || "Option"}</span><span>SKU</span><span>eBay price</span><span>Website</span><span>Stock</span><span>Photo</span><span />
+            <div className="cl-var head" style={{ gridTemplateColumns: cols }}>
+              <span>{f.variationName || "Option"}</span><span>SKU</span><span>eBay price</span><span>Website</span>
+              {web && f.onSale && <span>Sale</span>}<span>Stock</span>{web && <span>Weight kg</span>}<span>Photo</span><span />
             </div>
             {f.variations.map((v, i) => (
-              <div className="cl-var" key={i}>
+              <div className="cl-var" key={i} style={{ gridTemplateColumns: cols }}>
                 <input value={v.value} onChange={(e) => upd(i, "value", e.target.value)} placeholder="e.g. Perch" />
                 <input value={v.sku} onChange={(e) => upd(i, "sku", e.target.value)} placeholder="Optional" />
                 <input inputMode="decimal" value={v.price} onChange={(e) => upd(i, "price", e.target.value)} placeholder="£" />
                 <input inputMode="decimal" value={v.webPrice} onChange={(e) => upd(i, "webPrice", e.target.value)} placeholder="£" />
+                {web && f.onSale && <input inputMode="decimal" value={v.salePrice ?? ""} onChange={(e) => upd(i, "salePrice", e.target.value)} placeholder="£" aria-label="Website sale price" />}
                 <input inputMode="numeric" value={v.stock} onChange={(e) => upd(i, "stock", e.target.value)} />
+                {web && <input inputMode="decimal" value={v.weightKg ?? ""} onChange={(e) => upd(i, "weightKg", e.target.value)} placeholder={f.weightKg || "kg"} aria-label="Weight in kg" />}
                 <select value={v.photo} onChange={(e) => upd(i, "photo", e.target.value)}>
                   <option value="">None</option>
                   {f.photos.map((_, j) => <option key={j} value={String(j)}>Photo {j + 1}</option>)}
@@ -940,10 +1002,159 @@ const VariationsSection = ({ f, set }: { f: FormState; set: SetFn }) => {
           </div>
           <button className="btn ghost" onClick={() => set("variations", [...f.variations, { ...emptyVar(), price: f.variations.at(-1)?.price ?? "", webPrice: f.variations.at(-1)?.webPrice ?? "" }])}>+ Add option</button>
           <div className="note" style={{ marginBottom: 0 }}>
-            Leave SKU blank and SyncStock makes one. A photo picked here shows when a buyer chooses that option on eBay.
+            Leave SKU blank and SyncStock makes one. A photo picked here shows when a buyer picks that option{f.toEbay && web ? " on eBay and the website" : ""}.{web ? " Leave an option's weight blank to use the weight in the Website section." : ""}
           </div>
         </>
       )}
+    </Section>
+  );
+};
+
+const WebsiteSection = ({ n, f, set, setup }: { n: number; f: FormState; set: SetFn; setup?: Setup }) => {
+  const tagsQ = useQuery({
+    queryKey: ["website-tags"],
+    queryFn: async () => (await cl<{ tags: { tag: string; count: number }[] }>({ action: "website_tags" })).tags,
+    staleTime: 60 * 60 * 1000,
+  });
+  const [tagText, setTagText] = useState("");
+  const have = new Set(f.tags.map((t) => t.toLowerCase()));
+  const addTags = (raw: string) => {
+    const next = [...f.tags];
+    for (const t of raw.split(",").map((x) => x.trim().toLowerCase()).filter(Boolean)) if (!next.includes(t)) next.push(t);
+    set("tags", next.slice(0, 100));
+    setTagText("");
+  };
+  // Suggest tags you already use that match words in the title, brand, options or eBay category.
+  const words = ` ${[f.title, f.webTitle, f.brand, f.category?.name ?? "", ...f.variations.map((v) => v.value)].join(" ").toLowerCase().replace(/[^a-z0-9 ]+/g, " ")} `;
+  const all = tagsQ.data ?? [];
+  const suggested = all.filter((t) => !have.has(t.tag) && words.includes(` ${t.tag} `)).slice(0, 14);
+  const common = all.filter((t) => !have.has(t.tag) && !suggested.includes(t)).slice(0, 8);
+  const typed = tagText.trim().toLowerCase();
+  const matches = typed ? all.filter((t) => !have.has(t.tag) && t.tag.includes(typed)).slice(0, 8) : [];
+  const price = num(f.webPrice) || num(f.price);
+  const slugPreview = (f.urlSlug || f.webTitle || f.title).toLowerCase().normalize("NFKD").replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  const page = setup?.storePages.find((p) => p.id === f.storePageId);
+
+  return (
+    <Section n={n} title="Website" badge={f.tags.length ? `${f.tags.length} tags` : undefined}>
+      <div className="cl-row-title">
+        <div className="fld">
+          <label>Shop page</label>
+          <select value={f.storePageId} onChange={(e) => set("storePageId", e.target.value)}>
+            <option value="">Choose…</option>
+            {(setup?.storePages ?? []).map((p) => (
+              <option key={p.id} value={p.id}>{p.title}{p.enabled ? "" : " (hidden page)"}</option>
+            ))}
+          </select>
+        </div>
+        <div className="lt-checks" style={{ alignSelf: "end", marginBottom: 22 }}>
+          <label><input type="checkbox" checked={f.websiteVisible} onChange={(e) => set("websiteVisible", e.target.checked)} /> Show it on the website straight away</label>
+        </div>
+      </div>
+
+      <div className="fld">
+        <label>Website title <span className="cl-count">{f.webTitle ? `${f.webTitle.length} / 200` : "Same as eBay if left blank"}</span></label>
+        <input value={f.webTitle} onChange={(e) => set("webTitle", e.target.value)} placeholder={f.title || "Product name on the website"} />
+      </div>
+
+      <div className="lt-sub" style={{ marginTop: 6 }}>Tags</div>
+      <div className="cl-tags">
+        {f.tags.map((t) => (
+          <span key={t} className="cl-tag">
+            {t}
+            <button aria-label={`Remove ${t}`} onClick={() => set("tags", f.tags.filter((x) => x !== t))}>×</button>
+          </span>
+        ))}
+        <input
+          value={tagText}
+          onChange={(e) => {
+            if (e.target.value.includes(",")) addTags(e.target.value);
+            else setTagText(e.target.value);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && tagText.trim()) { e.preventDefault(); addTags(tagText); }
+            if (e.key === "Backspace" && !tagText && f.tags.length) set("tags", f.tags.slice(0, -1));
+          }}
+          placeholder={f.tags.length ? "Add another…" : "Type a tag and press Enter"}
+        />
+      </div>
+      {matches.length > 0 && (
+        <div className="cl-sugg"><span>Matching:</span>{matches.map((t) => <button key={t.tag} onClick={() => addTags(t.tag)}>+ {t.tag}</button>)}</div>
+      )}
+      {tagsQ.isLoading ? (
+        <div className="note" style={{ marginTop: 6 }}>Loading the tags your website uses…</div>
+      ) : tagsQ.isError ? (
+        <div className="note" style={{ marginTop: 6 }}>Couldn't load your website's tags. You can still type them in.</div>
+      ) : (
+        <>
+          {suggested.length > 0 && (
+            <div className="cl-sugg">
+              <span>Suggested:</span>
+              {suggested.map((t) => <button key={t.tag} onClick={() => addTags(t.tag)}>+ {t.tag}</button>)}
+              {suggested.length > 1 && <button className="all" onClick={() => addTags(suggested.map((t) => t.tag).join(","))}>Add all</button>}
+            </div>
+          )}
+          {common.length > 0 && (
+            <div className="cl-sugg"><span>You often use:</span>{common.map((t) => <button key={t.tag} onClick={() => addTags(t.tag)}>+ {t.tag}</button>)}</div>
+          )}
+        </>
+      )}
+
+      <div className="cl-row4" style={{ marginTop: 16 }}>
+        <div className="fld">
+          <label>Weight (kg)</label>
+          <input inputMode="decimal" value={f.weightKg} onChange={(e) => set("weightKg", e.target.value)} placeholder="e.g. 0.1" className={num(f.weightKg) > 0 || (f.hasVariations && f.variations.every((v) => num(v.weightKg || "") > 0)) ? "" : "cl-missing"} />
+        </div>
+        <div className="fld"><label>Length (cm)</label><input inputMode="decimal" value={f.lengthCm} onChange={(e) => set("lengthCm", e.target.value)} placeholder="Optional" /></div>
+        <div className="fld"><label>Width (cm)</label><input inputMode="decimal" value={f.widthCm} onChange={(e) => set("widthCm", e.target.value)} placeholder="Optional" /></div>
+        <div className="fld"><label>Height (cm)</label><input inputMode="decimal" value={f.heightCm} onChange={(e) => set("heightCm", e.target.value)} placeholder="Optional" /></div>
+      </div>
+      <div className="note" style={{ marginTop: -6 }}>
+        Website postage comes from your Squarespace shipping rules, which use this weight. {f.hasVariations ? "Options can have their own weight in the Variations table. " : ""}
+      </div>
+
+      <div className="lt-checks" style={{ marginTop: 14 }}>
+        <label><input type="checkbox" checked={f.onSale} onChange={(e) => set("onSale", e.target.checked)} /> On sale on the website</label>
+      </div>
+      {f.onSale && !f.hasVariations && (
+        <div className="fld" style={{ maxWidth: 220 }}>
+          <label>Sale price <span className="cl-count">was {price ? gbp(price) : "£"}</span></label>
+          <input inputMode="decimal" value={f.salePrice} onChange={(e) => set("salePrice", e.target.value)} placeholder="£" />
+        </div>
+      )}
+      {f.onSale && f.hasVariations && <div className="note" style={{ marginTop: 0 }}>Put each option's sale price in the Variations table.</div>}
+
+      <div className="lt-checks" style={{ marginTop: 14 }}>
+        <label><input type="checkbox" checked={f.webSameDesc} onChange={(e) => set("webSameDesc", e.target.checked)} /> Use the same description as eBay</label>
+      </div>
+      {!f.webSameDesc && (
+        <RichEditor
+          value={f.webProduct}
+          onChange={(v) => set("webProduct", v)}
+          label="Website description"
+          placeholder="The description for the website. The numbers table is added underneath automatically."
+        />
+      )}
+
+      <div className="lt-sub" style={{ marginTop: 18 }}>Search engines (optional)</div>
+      <div className="fld">
+        <label>SEO title <span className={`cl-count${f.seoTitle.length > 60 ? " over" : ""}`}>{f.seoTitle.length} / 60</span></label>
+        <input value={f.seoTitle} onChange={(e) => set("seoTitle", e.target.value)} placeholder={f.webTitle || f.title} />
+      </div>
+      <div className="fld">
+        <label>SEO description <span className={`cl-count${f.seoDescription.length > 160 ? " over" : ""}`}>{f.seoDescription.length} / 160</span></label>
+        <textarea value={f.seoDescription} onChange={(e) => set("seoDescription", e.target.value)} placeholder="One or two sentences shown under the link in Google" />
+      </div>
+      <div className="fld">
+        <label>Web address</label>
+        <input value={f.urlSlug} onChange={(e) => set("urlSlug", e.target.value)} placeholder={slugPreview || "made from the title"} />
+        <div className="note" style={{ marginTop: 6 }}>Ends in /p/{slugPreview || "…"}{page ? ` on the ${page.title} page` : ""}</div>
+      </div>
+
+      <div className="lt-note warn" style={{ marginBottom: 0 }}>
+        <b>Finish these in Squarespace:</b> categories, recommended add-ons and related products. Squarespace doesn't let other apps set them. The product
+        goes on {f.websiteVisible ? "the website straight away" : "hidden"}, and SyncStock gives you a link to it once it's listed.
+      </div>
     </Section>
   );
 };
@@ -954,7 +1165,7 @@ const PreviewPanel = ({ ebayHtml, webHtml, f }: { ebayHtml: string; webHtml: str
   const lowest = (xs: number[]) => (xs.filter((n) => n > 0).length ? Math.min(...xs.filter((n) => n > 0)) : 0);
   const minVar = f.hasVariations ? lowest(f.variations.map((v) => num(v.price))) : num(f.price);
   const minWeb = f.hasVariations ? lowest(f.variations.map((v) => num(v.webPrice) || num(v.price))) : num(f.webPrice) || num(f.price);
-  const webDoc = `<!doctype html><html><head><meta charset="utf-8"><style>body{font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0;padding:22px;color:#26241f;line-height:1.6;font-size:14px}img{width:100%;border-radius:8px;background:#f1ece3}h1{font-size:22px;margin:16px 0 4px}.p{font-size:18px;font-weight:700;margin-bottom:14px}table{border-collapse:collapse;width:100%}td{border-top:1px solid #e4ddd0;padding:6px 4px}h3{font-size:14px;text-transform:uppercase;letter-spacing:.05em}</style></head><body>${f.photos[0] ? `<img src="${escapeHtml(f.photos[0])}">` : ""}<h1>${escapeHtml(f.title || "Product title")}</h1><div class="p">${minWeb > 0 ? (f.hasVariations ? "From " : "") + gbp(minWeb) : ""}</div>${webHtml || "<p>Description goes here.</p>"}</body></html>`;
+  const webDoc = `<!doctype html><html><head><meta charset="utf-8"><style>body{font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0;padding:22px;color:#26241f;line-height:1.6;font-size:14px}img{width:100%;border-radius:8px;background:#f1ece3}h1{font-size:22px;margin:16px 0 4px}.p{font-size:18px;font-weight:700;margin-bottom:14px}table{border-collapse:collapse;width:100%}td{border-top:1px solid #e4ddd0;padding:6px 4px}h3{font-size:14px;text-transform:uppercase;letter-spacing:.05em}</style></head><body>${f.photos[0] ? `<img src="${escapeHtml(f.photos[0])}">` : ""}<h1>${escapeHtml(f.webTitle || f.title || "Product title")}</h1><div class="p">${minWeb > 0 ? (f.hasVariations ? "From " : "") + (f.onSale && !f.hasVariations && num(f.salePrice) > 0 ? `<s style="opacity:.5;font-weight:500">${gbp(minWeb)}</s> ${gbp(num(f.salePrice))}` : gbp(minWeb)) : ""}</div>${f.tags.length ? `<div style="font-size:11px;color:#7a746a;margin-bottom:12px">Tags: ${escapeHtml(f.tags.join(", "))}</div>` : ""}${webHtml || "<p>Description goes here.</p>"}</body></html>`;
   const stock = f.hasVariations ? f.variations.reduce((s, v) => s + Math.floor(num(v.stock)), 0) : Math.floor(num(f.stock));
   return (
     <>
@@ -1007,8 +1218,10 @@ const ResultPanel = ({ result, onAnother }: { result: CreateResult; onAnother: (
       {result.website && (
         <div className="lt-note ok">
           Added to the website with {result.website.photosUploaded} photo{result.website.photosUploaded === 1 ? "" : "s"}.{" "}
-          {result.website.url && <a href={result.website.url} target="_blank" rel="noreferrer" className="link">Open the product page ↗</a>}
-          <br />If you added it hidden, switch it on in Squarespace (Commerce, Products) once you're happy. Photos can take a minute to appear there.
+          {result.website.url && <a href={result.website.url} target="_blank" rel="noreferrer" className="link">Open the product page ↗</a>}{" "}
+          <a href="https://www.voyagershook.com/config/commerce/inventory" target="_blank" rel="noreferrer" className="link">Open Squarespace inventory ↗</a>
+          <br />Now add the category and any recommended add-ons in Squarespace. If you added it hidden, switch it on when you're happy. Photos can take a minute to appear there.
+          {result.website.notes?.map((x, i) => <div key={i} style={{ marginTop: 4 }}>{x}</div>)}
         </div>
       )}
       {result.websiteError && <div className="lt-note warn">The website didn't accept it: {result.websiteError}. The eBay listing is fine and saved in SyncStock.</div>}

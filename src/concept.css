@@ -238,3 +238,14 @@ tbody tr.vrow:hover td{background:#fafcff}
 .cl-draft div{flex:1;min-width:0}.cl-draft b{display:block;font-size:13.5px}.cl-draft small{color:var(--muted);font-size:12px}
 @media (max-width:1200px){.cl-grid{grid-template-columns:1fr}.cl-side{position:static;max-height:none;overflow:visible}}
 @media (max-width:720px){.cl-row4,.cl-specifics,.cl-row3{grid-template-columns:1fr 1fr}.cl-row-title,.cl-profit,.cl-tiles,.cl-where{grid-template-columns:1fr}}
+.cl-tags{display:flex;flex-wrap:wrap;gap:6px;align-items:center;border:1px solid var(--line);border-radius:10px;padding:7px 8px;background:#fff;min-height:44px}
+.cl-tags input{flex:1;min-width:160px;border:0;outline:0;font:inherit;font-size:13.5px;padding:4px}
+.cl-tag{display:inline-flex;align-items:center;gap:4px;background:var(--brandSoft);color:#0b6e6d;border-radius:999px;padding:3px 4px 3px 10px;font-size:12.5px;font-weight:650}
+.cl-tag button{border:0;background:transparent;color:inherit;cursor:pointer;font-size:14px;line-height:1;width:20px;height:20px;border-radius:50%}
+.cl-tag button:hover{background:rgba(0,0,0,.08)}
+.cl-sugg{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:8px;font-size:12px}
+.cl-sugg span{color:var(--muted);font-weight:650;margin-right:2px}
+.cl-sugg button{border:1px dashed #cfd6e0;background:#fff;border-radius:999px;padding:3px 10px;font:inherit;font-size:12px;cursor:pointer;color:#374151}
+.cl-sugg button:hover{border-color:var(--brand);color:var(--brand)}
+.cl-sugg button.all{border-style:solid;font-weight:700}
+.cl-sec .fld input.cl-missing{border-color:#f5c26b;background:#fffaf0}
