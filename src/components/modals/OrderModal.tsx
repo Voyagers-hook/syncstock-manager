@@ -133,7 +133,7 @@ export default function OrderModal({
               </div>
               <div className="fld">
                 <label>Stock</label>
-                <div className="radios">
+                <div className="radios" style={{ flexDirection: "column" }}>
                   <label className={restock ? "sel" : ""} onClick={() => setRestock(true)}>
                     <input type="radio" name="rr" readOnly checked={restock} /> Put back into stock (+
                     {order.quantity ?? 1})

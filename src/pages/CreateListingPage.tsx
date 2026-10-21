@@ -721,7 +721,7 @@ const ProductSection = ({ n, f, set }: { n: number; f: FormState; set: SetFn }) 
       </div>
       {f.hasVariations && (
         <div className="fld" style={{ maxWidth: 260 }}>
-          <label>Your eBay postage cost <span className="cl-count">not shown to buyers</span></label>
+          <label title="Only used for the profit figures. Buyers never see it.">Your eBay postage</label>
           <input inputMode="decimal" value={f.postageCost} placeholder="£" onChange={(e) => set("postageCost", e.target.value)} />
         </div>
       )}
@@ -745,7 +745,7 @@ const ProductSection = ({ n, f, set }: { n: number; f: FormState; set: SetFn }) 
               <input inputMode="decimal" value={f.webPrice} placeholder="£" onChange={(e) => { set("webPrice", e.target.value); set("webPriceTouched", true); }} />
             </div>
             <div className="fld">
-              <label>Your eBay postage cost <span className="cl-count">not shown to buyers</span></label>
+              <label title="Only used for the profit figures. Buyers never see it.">Your eBay postage</label>
               <input inputMode="decimal" value={f.postageCost} placeholder="£" onChange={(e) => set("postageCost", e.target.value)} />
             </div>
           </div>
