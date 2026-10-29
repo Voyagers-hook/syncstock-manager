@@ -67,13 +67,19 @@ export function useTopSellers(
         const base = productName.get(v.product_id) ?? "Unknown";
         vlabel.set(v.id, opt ? `${base} — ${opt}` : base);
       }
-      const index = new Map<string, string>(); // channel|id -> variant_id
+      // Key by channel + PRODUCT + sku, because eBay variation SKUs ("Yellow", "Red",
+      // "S"...) are reused across many listings — keying on sku alone piled every
+      // "Yellow" sale onto one product. Orders carry product_id, so we scope by it.
+      const vToP = new Map<string, string>();
+      for (const v of variants) vToP.set(v.id, v.product_id);
+      const index = new Map<string, string>(); // channel|product|id -> variant_id
       for (const l of listings) {
-        if (l.channel_sku) index.set(`${l.channel}|${l.channel_sku}`, l.variant_id);
-        if (l.channel_variant_id) index.set(`${l.channel}|${l.channel_variant_id}`, l.variant_id);
+        const pid = vToP.get(l.variant_id);
+        if (l.channel_sku) index.set(`${l.channel}|${pid}|${l.channel_sku}`, l.variant_id);
+        if (l.channel_variant_id) index.set(`${l.channel}|${pid}|${l.channel_variant_id}`, l.variant_id);
       }
       const resolve = (o: any): { key: string; name: string } => {
-        const vid = index.get(`${o.platform}|${o.sku}`);
+        const vid = o.product_id ? index.get(`${o.platform}|${o.product_id}|${o.sku}`) : undefined;
         if (vid) return { key: vid, name: vlabel.get(vid) ?? o.item_name ?? "Unknown" };
         return { key: `${o.product_id ?? "np"}::${o.sku ?? o.item_name ?? "?"}`, name: o.item_name ?? "Unknown" };
       };

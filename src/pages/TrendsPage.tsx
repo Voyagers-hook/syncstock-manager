@@ -72,8 +72,9 @@ const TrendsPage = () => {
         const opt = [v.option1, v.option2].filter(Boolean).join(" / ");
         const label = opt ? `${p.name} — ${opt}` : p.name;
         for (const l of p.channel_listings.filter((x) => x.variant_id === v.id)) {
-          if (l.channel_sku) m.set(`${l.channel}|${l.channel_sku}`, { key: v.id, name: label, productId: p.id });
-          if (l.channel_variant_id) m.set(`${l.channel}|${l.channel_variant_id}`, { key: v.id, name: label, productId: p.id });
+          // Scope by product id: eBay variation SKUs ("Yellow", "S"...) repeat across listings.
+          if (l.channel_sku) m.set(`${l.channel}|${p.id}|${l.channel_sku}`, { key: v.id, name: label, productId: p.id });
+          if (l.channel_variant_id) m.set(`${l.channel}|${p.id}|${l.channel_variant_id}`, { key: v.id, name: label, productId: p.id });
         }
       }
     }
@@ -81,7 +82,7 @@ const TrendsPage = () => {
   }, [products]);
 
   const resolve = (o: { platform: string; sku: string | null; product_id: string | null; item_name: string | null }): Item => {
-    const hit = itemIndex.get(`${o.platform}|${o.sku}`);
+    const hit = o.product_id ? itemIndex.get(`${o.platform}|${o.product_id}|${o.sku}`) : undefined;
     if (hit) return hit;
     const base = (o.product_id && nameById.get(o.product_id)) || o.item_name || "Unknown";
     return { key: `${o.product_id ?? "np"}::${o.sku ?? ""}`, name: o.sku && o.sku !== base ? `${base} — ${o.sku}` : base, productId: o.product_id ?? "" };

@@ -44,14 +44,17 @@ export function useSlowMovers(fromISO: string | null, limit = 8) {
       const productName = new Map<string, string>();
       const activeProduct = new Map<string, boolean>();
       for (const p of products) { productName.set(p.id, p.name); activeProduct.set(p.id, p.active); }
+      const vToP = new Map<string, string>();
+      for (const v of variants) vToP.set(v.id, v.product_id);
       const index = new Map<string, string>();
       for (const l of listings) {
-        if (l.channel_sku) index.set(`${l.channel}|${l.channel_sku}`, l.variant_id);
-        if (l.channel_variant_id) index.set(`${l.channel}|${l.channel_variant_id}`, l.variant_id);
+        const pid = vToP.get(l.variant_id);
+        if (l.channel_sku) index.set(`${l.channel}|${pid}|${l.channel_sku}`, l.variant_id);
+        if (l.channel_variant_id) index.set(`${l.channel}|${pid}|${l.channel_variant_id}`, l.variant_id);
       }
       const unitsByVariant: Record<string, number> = {};
       for (const o of orders) {
-        const vid = index.get(`${o.platform}|${o.sku}`);
+        const vid = o.product_id ? index.get(`${o.platform}|${o.product_id}|${o.sku}`) : undefined;
         if (vid) unitsByVariant[vid] = (unitsByVariant[vid] ?? 0) + (o.quantity ?? 0);
       }
       const stockByVariant = new Map<string, number>();
