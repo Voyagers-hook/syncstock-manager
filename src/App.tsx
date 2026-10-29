@@ -17,6 +17,8 @@ import TopSellersPage from "./pages/TopSellersPage.tsx";
 import SettingsPage from "./pages/SettingsPage.tsx";
 import ListingTemplatesPage from "./pages/ListingTemplatesPage.tsx";
 import CreateListingPage from "./pages/CreateListingPage.tsx";
+import TitleCleanupPage from "./pages/TitleCleanupPage.tsx";
+import SellSimilarPage from "./pages/SellSimilarPage.tsx";
 import NotFound from "./pages/NotFound.tsx";
 
 const CORRECT_PASSWORD = "VoyagersHook25!";
@@ -136,6 +138,8 @@ const App = () => {
             <Route path="/merge" element={<MergePage />} />
             <Route path="/top-sellers" element={<TopSellersPage />} />
             <Route path="/listing-templates" element={<ListingTemplatesPage />} />
+            <Route path="/title-cleanup" element={<TitleCleanupPage />} />
+            <Route path="/sell-similar" element={<SellSimilarPage />} />
             <Route path="/create-listing" element={<CreateListingPage />} />
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="*" element={<NotFound />} />
