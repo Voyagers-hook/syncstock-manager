@@ -46,6 +46,7 @@ interface FormState {
   hasVariations: boolean;
   variationName: string;
   variations: VariationRow[];
+  storeCategoryId: string; // eBay Store (shop) category — optional
   toEbay: boolean;
   toWebsite: boolean;
   storePageId: string;
@@ -93,6 +94,7 @@ const blank = (): FormState => ({
   hasVariations: false,
   variationName: "Colour",
   variations: [],
+  storeCategoryId: "",
   toEbay: true,
   toWebsite: true,
   storePageId: "",
@@ -276,6 +278,7 @@ const CreateListingPage = () => {
       descriptionHtml: ebayHtml,
       websiteHtml: webHtml,
       categoryId: f.category?.id ?? "",
+      storeCategoryId: f.storeCategoryId || undefined,
       specifics,
       variationName: f.hasVariations ? f.variationName.trim() : undefined,
       variations: vars,
@@ -926,6 +929,13 @@ const CategorySection = ({ n, f, set }: { n: number; f: FormState; set: SetFn })
   const [q, setQ] = useState("");
   const [cats, setCats] = useState<Category[] | null>(null);
   const [busy, setBusy] = useState(false);
+  const storeCatsQ = useQuery({
+    queryKey: ["store-categories"],
+    queryFn: () => cl<{ storeCategories: { id: string; name: string }[] }>({ action: "store_categories" }),
+    staleTime: 30 * 60 * 1000,
+    enabled: f.toEbay,
+  });
+  const storeCats = storeCatsQ.data?.storeCategories ?? [];
   const search = async (query = q || f.title) => {
     if (!query.trim()) return;
     setBusy(true);
@@ -966,6 +976,29 @@ const CategorySection = ({ n, f, set }: { n: number; f: FormState; set: SetFn })
             </div>
           ))}
         </>
+      )}
+
+      {f.toEbay && (
+        <div style={{ marginTop: 14, borderTop: "1px solid var(--line)", paddingTop: 12 }}>
+          <label style={{ display: "block", fontSize: 13, fontWeight: 600, marginBottom: 4 }}>Your eBay shop category <span style={{ fontWeight: 400, color: "var(--muted)" }}>(optional)</span></label>
+          {storeCatsQ.isLoading ? (
+            <div className="note">Loading your shop categories…</div>
+          ) : storeCatsQ.isError ? (
+            <div className="note">Couldn't load your shop categories: {(storeCatsQ.error as Error).message}</div>
+          ) : (
+            <>
+              <select
+                value={f.storeCategoryId}
+                onChange={(e) => set("storeCategoryId", e.target.value)}
+                style={{ width: "100%", padding: "9px 10px", borderRadius: 8, border: "1px solid var(--line)", fontSize: 14, background: "#fff" }}
+              >
+                <option value="">None — don't file in a shop category</option>
+                {storeCats.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+              <div className="note" style={{ marginTop: 4 }}>Puts the listing in your eBay shop's own navigation (e.g. Rods, Reels). Separate from the eBay category above.</div>
+            </>
+          )}
+        </div>
       )}
     </Section>
   );

@@ -26,6 +26,7 @@ const cors = {
   "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
 };
 const EBAY = "https://api.ebay.com";
+const MEDIA = "https://apim.ebay.com/commerce/media/v1_beta"; // eBay Media API (replaced UploadSiteHostedPictures, decommissioned 30 Sep 2026)
 const SQ = "https://api.squarespace.com/1.0";
 
 interface Variation { value: string; sku: string; price: number; webPrice: number; stock: number; photo?: number; weightKg?: number; salePrice?: number }
@@ -42,6 +43,8 @@ interface Listing {
   descriptionHtml: string;        // full eBay template HTML
   websiteHtml: string;            // plain description for Squarespace
   categoryId: string;
+  storeCategoryId?: string;        // eBay Store (shop) category
+  storeCategory2Id?: string;       // optional second Store category
   specifics: Record<string, string[]>;
   variationName?: string;         // e.g. "Colour"
   variations?: Variation[];
@@ -127,6 +130,24 @@ Deno.serve(async (req) => {
         out.storePagesError = e.message;
       }
       return json(out);
+    }
+
+    if (action === "store_categories") {
+      // The seller's own eBay Store (shop) categories, for the Storefront field on a listing.
+      const token = await userToken(supabase);
+      const xml = await trading(token, "GetStore", `<CategoryStructureOnly>true</CategoryStructureOnly>`);
+      const r = ebayResult(xml);
+      if (!r.success) throw new Error(r.errors.join(" ") || "Couldn't read your eBay Store categories.");
+      // Flat list (parent plus "Parent › Child" for any sub-categories).
+      const top = xml.match(/<CustomCategories>([\s\S]*?)<\/CustomCategories>/)?.[1] ?? "";
+      const cats: { id: string; name: string }[] = [];
+      for (const [, block] of top.matchAll(/<CustomCategory>([\s\S]*?)<\/CustomCategory>/g)) {
+        const id = block.match(/<CategoryID>([^<]*)<\/CategoryID>/)?.[1];
+        const name = decode(block.match(/<Name>([^<]*)<\/Name>/)?.[1] ?? "");
+        if (id && name && id !== "1") cats.push({ id, name });
+      }
+      cats.sort((a, b) => a.name.localeCompare(b.name));
+      return json({ ok: true, storeCategories: cats });
     }
 
     if (action === "categories") {
@@ -460,6 +481,7 @@ function itemXml(L: Listing, d: any): string {
     ${vars.length || !L.sku ? "" : `<SKU>${esc(L.sku)}</SKU>`}
     <PictureDetails>${pics}</PictureDetails>
     ${specifics ? `<ItemSpecifics>${specifics}</ItemSpecifics>` : ""}
+    ${L.storeCategoryId ? `<Storefront><StoreCategoryID>${esc(L.storeCategoryId)}</StoreCategoryID>${L.storeCategory2Id ? `<StoreCategory2ID>${esc(L.storeCategory2Id)}</StoreCategory2ID>` : ""}</Storefront>` : ""}
     <SellerProfiles>
       <SellerShippingProfile><ShippingProfileID>${esc(d.shipping.id)}</ShippingProfileID></SellerShippingProfile>
       <SellerReturnProfile><ReturnProfileID>${esc(d.returns.id)}</ReturnProfileID></SellerReturnProfile>
@@ -469,25 +491,40 @@ function itemXml(L: Listing, d: any): string {
   </Item>`;
 }
 
+// Upload a photo to eBay via the Media API (create_image_from_file). This replaced the
+// old UploadSiteHostedPictures Trading call, which eBay decommissioned on 30 Sep 2026
+// (it now 404s). The Media API accepts JPG/PNG/GIF/BMP/TIFF/WEBP/HEIC/AVIF and returns
+// a hosted eBay image URL usable directly in the listing.
 async function uploadPhoto(token: string, name: string, base64: string): Promise<string> {
   const raw = base64.replace(/^data:[^,]+,/, "");
   const bytes = Uint8Array.from(atob(raw), (c) => c.charCodeAt(0));
-  if (bytes.length > 7 * 1024 * 1024) throw new Error("That photo is too large (7MB max).");
-  const boundary = "----SyncStock" + crypto.randomUUID();
-  const xml = `<?xml version="1.0" encoding="utf-8"?><UploadSiteHostedPicturesRequest xmlns="urn:ebay:apis:eBLBaseComponents"><RequesterCredentials><eBayAuthToken>${token}</eBayAuthToken></RequesterCredentials><PictureName>${esc(name.slice(0, 80))}</PictureName><PictureSet>Supersize</PictureSet></UploadSiteHostedPicturesRequest>`;
-  const enc = new TextEncoder();
-  const head = enc.encode(`--${boundary}\r\nContent-Disposition: form-data; name="XML Payload"\r\nContent-Type: text/xml;charset=utf-8\r\n\r\n${xml}\r\n--${boundary}\r\nContent-Disposition: form-data; name="image"; filename="${name.replace(/"/g, "")}"\r\nContent-Type: application/octet-stream\r\nContent-Transfer-Encoding: binary\r\n\r\n`);
-  const tail = enc.encode(`\r\n--${boundary}--\r\n`);
-  const payload = new Uint8Array(head.length + bytes.length + tail.length);
-  payload.set(head, 0); payload.set(bytes, head.length); payload.set(tail, head.length + bytes.length);
-  const r = await fetch(`${EBAY}/ws/api.dll`, {
+  if (bytes.length > 12 * 1024 * 1024) throw new Error("That photo is too large (12MB max).");
+  const fd = new FormData();
+  fd.append("image", new Blob([bytes]), (name || "photo.jpg").slice(0, 100));
+  const r = await fetch(`${MEDIA}/image/create_image_from_file`, {
     method: "POST",
-    headers: { "Content-Type": `multipart/form-data; boundary=${boundary}`, "X-EBAY-API-COMPATIBILITY-LEVEL": "1193", "X-EBAY-API-CALL-NAME": "UploadSiteHostedPictures", "X-EBAY-API-SITEID": "3" },
-    body: payload,
+    headers: { Authorization: `Bearer ${token}` },
+    body: fd,
   });
   const out = await r.text();
-  const url = tag(out, "FullURL");
-  if (!url) throw new Error("eBay didn't accept the photo: " + (tag(out, "LongMessage") || tag(out, "ShortMessage") || "unknown error"));
+  if (r.status !== 201 && r.status !== 200) {
+    let reason = out.slice(0, 300);
+    try { const j = JSON.parse(out); reason = j?.errors?.[0]?.message || j?.errors?.[0]?.longMessage || reason; } catch { /* keep raw */ }
+    console.log(`[upload_photo] Media API FAIL http=${r.status} bytes=${bytes.length} body=${out.slice(0, 600)}`);
+    throw new Error("eBay didn't accept the photo: " + reason);
+  }
+  // The create response carries the hosted URLs directly; fall back to Location + getImage.
+  let url = "";
+  try { const j = JSON.parse(out); url = j.maxDimensionImageUrl || j.imageUrl || ""; } catch { /* below */ }
+  if (!url) {
+    const loc = r.headers.get("location") || r.headers.get("Location");
+    if (loc) {
+      const gr = await fetch(loc, { headers: { Authorization: `Bearer ${token}` } });
+      const gj = await gr.json().catch(() => ({} as any));
+      url = gj.maxDimensionImageUrl || gj.imageUrl || "";
+    }
+  }
+  if (!url) throw new Error("eBay accepted the photo but returned no image URL.");
   return url;
 }
 
