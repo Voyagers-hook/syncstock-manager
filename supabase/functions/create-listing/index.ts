@@ -138,16 +138,7 @@ Deno.serve(async (req) => {
       const xml = await trading(token, "GetStore", `<CategoryStructureOnly>true</CategoryStructureOnly>`);
       const r = ebayResult(xml);
       if (!r.success) throw new Error(r.errors.join(" ") || "Couldn't read your eBay Store categories.");
-      // Flat list (parent plus "Parent › Child" for any sub-categories).
-      const top = xml.match(/<CustomCategories>([\s\S]*?)<\/CustomCategories>/)?.[1] ?? "";
-      const cats: { id: string; name: string }[] = [];
-      for (const [, block] of top.matchAll(/<CustomCategory>([\s\S]*?)<\/CustomCategory>/g)) {
-        const id = block.match(/<CategoryID>([^<]*)<\/CategoryID>/)?.[1];
-        const name = decode(block.match(/<Name>([^<]*)<\/Name>/)?.[1] ?? "");
-        if (id && name && id !== "1") cats.push({ id, name });
-      }
-      cats.sort((a, b) => a.name.localeCompare(b.name));
-      return json({ ok: true, storeCategories: cats });
+      return json({ ok: true, storeCategories: parseStoreCats(xml) });
     }
 
     if (action === "categories") {
@@ -444,6 +435,44 @@ async function skuClashes(supabase: any, L: Listing): Promise<string[]> {
   for (const r of p ?? []) used.set(r.sku, r.name);
   for (const r of v ?? []) used.set(r.internal_sku, r.products?.name ?? "another product");
   return [...used].map(([s, n]) => `SKU "${s}" is already used by "${n}". Give it a different SKU.`);
+}
+
+// Parse the full eBay Store category tree from GetStore. Top level is <CustomCategory>,
+// sub-levels nest via repeated <ChildCategory> (same structure, several levels deep).
+// Returns a flat, pre-ordered list where each node's name is its full "A › B › C" path.
+function parseStoreCats(xml: string): { id: string; name: string; depth: number }[] {
+  const scope = xml.match(/<CustomCategories>([\s\S]*?)<\/CustomCategories>/)?.[1] ?? "";
+  const re = /<(CustomCategory|ChildCategory)>|<\/(?:CustomCategory|ChildCategory)>|<CategoryID>([^<]*)<\/CategoryID>|<Name>([^<]*)<\/Name>/g;
+  const roots: any[] = [];
+  const stack: any[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(scope))) {
+    if (m[1]) {
+      const node = { id: "", name: "", children: [] as any[] };
+      (stack.length ? stack[stack.length - 1].children : roots).push(node);
+      stack.push(node);
+    } else if (m[2] !== undefined) {
+      const t = stack[stack.length - 1]; if (t && !t.id) t.id = m[2];
+    } else if (m[3] !== undefined) {
+      const t = stack[stack.length - 1]; if (t && !t.name) t.name = decode(m[3]);
+    } else {
+      stack.pop();
+    }
+  }
+  const out: { id: string; name: string; depth: number }[] = [];
+  const walk = (nodes: any[], anc: string[]) => {
+    for (const n of nodes) {
+      if (n.id && n.name && n.id !== "1") {
+        const path = [...anc, n.name];
+        out.push({ id: n.id, name: path.join(" › "), depth: anc.length });
+        walk(n.children, path);
+      } else {
+        walk(n.children, anc);
+      }
+    }
+  };
+  walk(roots, []);
+  return out;
 }
 
 function itemXml(L: Listing, d: any): string {

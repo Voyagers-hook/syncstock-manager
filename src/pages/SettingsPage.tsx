@@ -172,6 +172,9 @@ const SettingsPage = () => {
               })}
             </div>
 
+            {/* API connections (password protected) */}
+            <ConnectionsCard />
+
             {/* Sync Controls */}
             <Card>
               <CardHeader>
@@ -248,6 +251,124 @@ const SettingsPage = () => {
         )}
       </main>
     </div>
+  );
+};
+
+const CONN_GROUPS: { title: string; note?: string; fields: { key: string; label: string }[] }[] = [
+  { title: "QuickFile", note: "Account Settings → 3rd Party Integration → API", fields: [
+    { key: "quickfile_account_number", label: "Account Number" },
+    { key: "quickfile_api_key", label: "API Key" },
+    { key: "quickfile_app_id", label: "Application ID" },
+  ] },
+  { title: "SendCloud", note: "Settings → Integrations → API", fields: [
+    { key: "sendcloud_public_key", label: "Public Key" },
+    { key: "sendcloud_secret_key", label: "Secret Key" },
+  ] },
+  { title: "Parcel2Go", note: "Developer / API portal (OAuth)", fields: [
+    { key: "parcel2go_client_id", label: "Client ID" },
+    { key: "parcel2go_client_secret", label: "Client Secret" },
+  ] },
+  { title: "DPD", note: "DPD API account credentials", fields: [
+    { key: "dpd_username", label: "Username" },
+    { key: "dpd_password", label: "Password" },
+    { key: "dpd_account_number", label: "Account Number" },
+  ] },
+];
+
+const ConnectionsCard = () => {
+  const [unlocked, setUnlocked] = useState(false);
+  const [pw, setPw] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<Record<string, boolean>>({});
+  const [vals, setVals] = useState<Record<string, string>>({});
+
+  const call = async (action: string, extra: Record<string, unknown> = {}) => {
+    const { data, error } = await supabase.functions.invoke("connections", { body: { action, password: pw, ...extra } });
+    if (error) {
+      let msg = error.message;
+      try { const ctx = (error as any).context; if (ctx?.json) { const j = await ctx.json(); if (j?.error) msg = j.error; } } catch { /* keep */ }
+      throw new Error(msg);
+    }
+    if (data?.error) throw new Error(data.error);
+    return data;
+  };
+
+  const unlock = async () => {
+    setBusy(true);
+    try { const d = await call("status"); setStatus(d.set || {}); setUnlocked(true); }
+    catch (e) { toast.error((e as Error).message); }
+    finally { setBusy(false); }
+  };
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      const d = await call("save", { values: vals });
+      setStatus(d.set || {});
+      setVals({});
+      toast.success("Connections saved.");
+    } catch (e) { toast.error((e as Error).message); }
+    finally { setBusy(false); }
+  };
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">Connections &amp; API keys</CardTitle>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {!unlocked ? (
+          <div className="flex items-center gap-3">
+            <input
+              type="password"
+              value={pw}
+              onChange={(e) => setPw(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && pw && unlock()}
+              placeholder="Enter password to manage keys"
+              className="flex-1 max-w-xs rounded-md border border-input bg-background px-3 py-2 text-sm"
+            />
+            <Button size="sm" onClick={unlock} disabled={busy || !pw}>
+              {busy ? <Loader2 className="w-4 h-4 animate-spin" /> : "Unlock"}
+            </Button>
+          </div>
+        ) : (
+          <>
+            <p className="text-xs text-muted-foreground">Stored keys are never shown. Leave a field blank to keep what's saved; type a new value to replace it.</p>
+            {CONN_GROUPS.map((g) => (
+              <div key={g.title} className="border border-border rounded-md p-3 space-y-2">
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold text-sm">{g.title}</span>
+                  {g.note && <span className="text-xs text-muted-foreground">{g.note}</span>}
+                </div>
+                {g.fields.map((f) => (
+                  <div key={f.key} className="flex items-center gap-2">
+                    <label className="text-sm w-36 shrink-0">{f.label}</label>
+                    <input
+                      type="password"
+                      value={vals[f.key] ?? ""}
+                      onChange={(e) => setVals((v) => ({ ...v, [f.key]: e.target.value }))}
+                      placeholder={status[f.key] ? "•••••• (saved)" : "not set"}
+                      className="flex-1 rounded-md border border-input bg-background px-3 py-1.5 text-sm"
+                    />
+                    {status[f.key] ? (
+                      <Badge className="bg-success text-success-foreground text-xs"><CheckCircle className="w-3 h-3 mr-1" />Set</Badge>
+                    ) : (
+                      <Badge variant="outline" className="text-warning text-xs"><AlertCircle className="w-3 h-3 mr-1" />Not set</Badge>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ))}
+            <div className="flex items-center gap-3">
+              <Button size="sm" onClick={save} disabled={busy}>
+                {busy ? <Loader2 className="w-4 h-4 mr-2 animate-spin" /> : null}Save keys
+              </Button>
+              <Button size="sm" variant="outline" onClick={() => { setUnlocked(false); setPw(""); setVals({}); }}>Lock</Button>
+            </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
   );
 };
 
