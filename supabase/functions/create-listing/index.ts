@@ -29,7 +29,8 @@ const EBAY = "https://api.ebay.com";
 const MEDIA = "https://apim.ebay.com/commerce/media/v1_beta"; // eBay Media API (replaced UploadSiteHostedPictures, decommissioned 30 Sep 2026)
 const SQ = "https://api.squarespace.com/1.0";
 
-interface Variation { value: string; sku: string; price: number; webPrice: number; stock: number; photo?: number; weightKg?: number; salePrice?: number }
+interface BundleComponent { variantId: string; qty: number }
+interface Variation { value: string; sku: string; price: number; webPrice: number; stock: number; photo?: number; weightKg?: number; salePrice?: number; components?: BundleComponent[]; costPrice?: number }
 interface Listing {
   title: string;
   sku: string;
@@ -48,6 +49,11 @@ interface Listing {
   specifics: Record<string, string[]>;
   variationName?: string;         // e.g. "Colour"
   variations?: Variation[];
+  // Bundles: the items this listing is made of. A single item uses `components`; a listing
+  // with options gives each option its own `components`. Stock is then worked out here from
+  // those items (never typed in), and selling the bundle takes the items out of stock.
+  components?: BundleComponent[];
+  isBundle?: boolean;
   toEbay: boolean;
   toWebsite: boolean;
   website?: {
@@ -114,6 +120,21 @@ Deno.serve(async (req) => {
       }
       const tags = [...counts].sort((a, b) => b[1] - a[1]).map(([tag, count]) => ({ tag, count }));
       return json({ ok: true, tags });
+    }
+
+    if (action === "bundle_preview") {
+      // Stock, cost and RRP for a set of components, so the page can show them as you build.
+      const comps = (body.components ?? []) as BundleComponent[];
+      const info = await componentInfo(supabase, comps.map((c) => c.variantId));
+      let stock = Infinity, cost = 0, rrp = 0, costKnown = true;
+      for (const c of comps) {
+        const i = info.get(c.variantId);
+        const q = Math.max(1, Math.floor(c.qty || 1));
+        stock = Math.min(stock, i ? Math.floor(i.stock / q) : 0);
+        if (i?.cost == null) costKnown = false; else cost += i.cost * q;
+        rrp += (i?.price ?? 0) * q;
+      }
+      return json({ ok: true, stock: comps.length ? stock : 0, cost: Math.round(cost * 100) / 100, costKnown, rrp: Math.round(rrp * 100) / 100 });
     }
 
     if (action === "setup") {
@@ -228,15 +249,17 @@ Deno.serve(async (req) => {
 
     if (action === "verify") {
       const L = body.listing as Listing;
+      const bundleProblems = await prepareBundle(supabase, L);
       const token = await userToken(supabase);
       const defaults = await ebayDefaults(supabase, token);
       const xml = await trading(token, "VerifyAddFixedPriceItem", itemXml(L, defaults));
-      return json({ ok: true, ...ebayResult(xml), problems: [...validate(L), ...(await skuClashes(supabase, L))] });
+      return json({ ok: true, ...ebayResult(xml), problems: [...validate(L), ...bundleProblems, ...(await skuClashes(supabase, L))], bundle: bundleSummary(L) });
     }
 
     if (action === "test_website") {
       // Creates the product hidden on Squarespace, reads back what was saved, then deletes it.
       const L = body.listing as Listing;
+      await prepareBundle(supabase, L);
       L.website = { ...(L.website as any), visible: false };
       fillSkus(L, null);
       const sq = await createSquarespace(supabase, L);
@@ -249,7 +272,7 @@ Deno.serve(async (req) => {
 
     if (action === "create") {
       const L = body.listing as Listing;
-      const problems = [...validate(L), ...(await skuClashes(supabase, L))];
+      const problems = [...(await prepareBundle(supabase, L)), ...validate(L), ...(await skuClashes(supabase, L))];
       if (problems.length) return json({ error: problems.join(" ") }, 400);
       const result: Record<string, unknown> = { ok: true };
 
@@ -690,21 +713,25 @@ async function saveToSyncStock(supabase: any, L: Listing, ebayItemId: string | n
   const now = new Date().toISOString();
   const { data: p, error: pe } = await supabase
     .from("products")
-    .insert({ name: L.title.trim(), sku: L.sku || null, active: true, status: "active", cost_price: L.costPrice ?? null, image_url: L.photos?.[0] ?? null, description: L.websiteHtml || null })
+    .insert({ name: L.title.trim(), sku: L.sku || null, active: true, status: "active", cost_price: L.costPrice ?? null, image_url: L.photos?.[0] ?? null, description: L.websiteHtml || null, ...(L.isBundle ? { is_bundle: true } : {}) })
     .select("id")
     .single();
   if (pe || !p) throw new Error("Listed, but couldn't save the product in SyncStock: " + (pe?.message || "unknown error"));
   // Fallback SKUs follow the Quick Sync pattern (<itemId>-<value>, or the item id), so they never clash.
   const base = ebayItemId ?? `WEB-${String(p.id).slice(0, 8)}`;
   const rows = vars.length
-    ? vars.map((v) => ({ value: v.value, sku: v.sku?.trim() || `${base}-${v.value}`, price: v.price, webPrice: v.webPrice || v.price, stock: v.stock }))
-    : [{ value: null as string | null, sku: L.sku?.trim() || base, price: L.price, webPrice: L.webPrice || L.price, stock: L.stock }];
+    ? vars.map((v) => ({ value: v.value, sku: v.sku?.trim() || `${base}-${v.value}`, price: v.price, webPrice: v.webPrice || v.price, stock: v.stock, components: v.components ?? [], cost: v.costPrice ?? L.costPrice ?? null }))
+    : [{ value: null as string | null, sku: L.sku?.trim() || base, price: L.price, webPrice: L.webPrice || L.price, stock: L.stock, components: L.components ?? [], cost: L.costPrice ?? null }];
   const problems: string[] = [];
   const cpid = ebayItemId ? `v1|${ebayItemId}|0` : null;
   const linked: string[] = [];
   for (const row of rows) {
-    const { data: v, error: ve } = await supabase.from("variants").insert({ product_id: p.id, internal_sku: row.sku, option1: row.value, cost_price: L.costPrice ?? null }).select("id").single();
+    const { data: v, error: ve } = await supabase.from("variants").insert({ product_id: p.id, internal_sku: row.sku, option1: row.value, cost_price: row.cost }).select("id").single();
     if (!v) { problems.push(`Couldn't save option "${row.value ?? row.sku}": ${ve?.message ?? "unknown error"}`); continue; }
+    if (L.isBundle && row.components.length) {
+      const { error: be } = await supabase.from("bundle_components").insert(row.components.map((c) => ({ bundle_variant_id: v.id, component_variant_id: c.variantId, quantity: Math.max(1, Math.floor(c.qty || 1)) })));
+      if (be) problems.push(`Couldn't save what's in "${row.value ?? "the bundle"}": ${be.message}. Stock won't come off the items until this is fixed.`);
+    }
     await supabase.from("inventory").insert({ variant_id: v.id, product_id: p.id, total_stock: Math.max(0, Math.floor(row.stock || 0)) });
     if (cpid) {
       // Same shape the eBay Quick Sync writes, so it recognises these rows.
@@ -722,4 +749,71 @@ async function saveToSyncStock(supabase: any, L: Listing, ebayItemId: string | n
     }
   }
   return { productId: p.id, variants: rows.length, links: linked.length, problems };
+}
+
+// ── Bundles ─────────────────────────────────────────────────────────────────
+
+async function componentInfo(supabase: any, ids: string[]) {
+  const out = new Map<string, { stock: number; cost: number | null; price: number; name: string; isBundle: boolean }>();
+  const uniq = [...new Set(ids.filter(Boolean))];
+  if (!uniq.length) return out;
+  const [{ data: vs }, { data: inv }, { data: cls }] = await Promise.all([
+    supabase.from("variants").select("id, option1, cost_price, products(name, cost_price, is_bundle)").in("id", uniq),
+    supabase.from("inventory").select("variant_id, total_stock").in("variant_id", uniq),
+    supabase.from("channel_listings").select("variant_id, channel, channel_price, sq_base_price").in("variant_id", uniq),
+  ]);
+  const stock = new Map<string, number>((inv ?? []).map((i: any) => [i.variant_id, Math.max(0, i.total_stock ?? 0)]));
+  for (const v of vs ?? []) {
+    const ls = (cls ?? []).filter((l: any) => l.variant_id === v.id);
+    const web = ls.find((l: any) => l.channel === "squarespace");
+    const eb = ls.find((l: any) => l.channel === "ebay");
+    out.set(v.id, {
+      stock: stock.get(v.id) ?? 0,
+      cost: v.cost_price ?? v.products?.cost_price ?? null,
+      price: Number(web?.sq_base_price ?? web?.channel_price ?? eb?.channel_price ?? 0),
+      name: [v.products?.name, v.option1].filter(Boolean).join(" - "),
+      isBundle: !!v.products?.is_bundle,
+    });
+  }
+  return out;
+}
+
+// If the listing is a bundle, check its components and work out its stock and cost from them.
+// The page sends a stock figure too, but it is ignored: stock always comes from the items.
+async function prepareBundle(supabase: any, L: Listing): Promise<string[]> {
+  const vars = L.variations ?? [];
+  const sets: { label: string; comps: BundleComponent[]; apply: (stock: number, cost: number | null) => void }[] = vars.length
+    ? vars.map((v) => ({ label: `"${v.value}"`, comps: v.components ?? [], apply: (st, c) => { v.stock = st; v.costPrice = c ?? undefined; } }))
+    : [{ label: "the bundle", comps: L.components ?? [], apply: (st, c) => { L.stock = st; L.costPrice = c ?? L.costPrice; } }];
+  const isBundle = !!L.isBundle || sets.some((x) => x.comps.length);
+  if (!isBundle) return [];
+  L.isBundle = true;
+  const problems: string[] = [];
+  const info = await componentInfo(supabase, sets.flatMap((x) => x.comps.map((c) => c.variantId)));
+  for (const set of sets) {
+    if (!set.comps.length) { problems.push(`Add the items that go into ${set.label}.`); set.apply(0, null); continue; }
+    const seen = new Set<string>();
+    let stock = Infinity, cost = 0, costKnown = true;
+    for (const c of set.comps) {
+      const i = info.get(c.variantId);
+      if (!i) { problems.push(`An item in ${set.label} no longer exists in SyncStock. Remove it and pick it again.`); stock = 0; continue; }
+      if (i.isBundle) problems.push(`"${i.name}" is itself a bundle. Bundles can only be made from normal items.`);
+      if (seen.has(c.variantId)) problems.push(`"${i.name}" is in ${set.label} twice. Use the quantity instead.`);
+      seen.add(c.variantId);
+      const q = Math.max(1, Math.floor(c.qty || 1));
+      c.qty = q;
+      stock = Math.min(stock, Math.floor(i.stock / q));
+      if (i.cost == null) costKnown = false; else cost += i.cost * q;
+    }
+    set.apply(Number.isFinite(stock) ? stock : 0, costKnown ? Math.round(cost * 100) / 100 : null);
+  }
+  const total = vars.length ? vars.reduce((n, v) => n + (v.stock || 0), 0) : L.stock || 0;
+  if (!problems.length && total <= 0) problems.push("You can't make any of these bundles from what's in stock right now, so there's nothing to list yet.");
+  return problems;
+}
+
+function bundleSummary(L: Listing) {
+  if (!L.isBundle) return null;
+  const vars = L.variations ?? [];
+  return vars.length ? vars.map((v) => ({ option: v.value, stock: v.stock, cost: v.costPrice ?? null })) : [{ option: null, stock: L.stock, cost: L.costPrice ?? null }];
 }

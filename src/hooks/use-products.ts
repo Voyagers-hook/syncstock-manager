@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { assertNotBundle } from "@/lib/bundles";
 import { supabase } from "@/integrations/supabase/client";
 import { chunkArray, fetchAllPages } from "@/lib/supabase-pagination";
 import type {
@@ -359,6 +360,7 @@ export function useUpdateInventory() {
       variantId: string;
       stock: number;
     }) => {
+      await assertNotBundle(variantId);
       const updatedAt = new Date().toISOString();
 
       const { error } = await supabase

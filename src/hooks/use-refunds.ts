@@ -1,4 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { restockBundle } from "@/lib/bundles";
 import { supabase } from "@/integrations/supabase/client";
 import { toast } from "sonner";
 
@@ -100,7 +101,11 @@ export function useCreateRefund() {
       });
       if (error) throw error;
 
-      if (input.restock && variantId) {
+      // A returned bundle puts the items it is made of back into stock.
+      const bundleDone = input.restock && variantId
+        ? await restockBundle(variantId, input.quantity, `Return on order ${input.orderNumber ?? input.orderId}`, input.reason)
+        : false;
+      if (input.restock && variantId && !bundleDone) {
         const { data: inv } = await supabase
           .from("inventory")
           .select("id, total_stock, product_id")

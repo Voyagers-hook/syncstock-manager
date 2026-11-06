@@ -100,6 +100,28 @@ async function applySale(channel: string, dedupKey: string, match: any, qty: num
   }
   const orderRow: any = { ...meta, quantity: qty, total_price: (meta.unit_price ?? 0) * qty, synced_at: new Date().toISOString(), status: "completed" };
   if (listing) {
+    // A bundle has no stock of its own: selling one takes the items it is made of out of stock.
+    // push-stock then works out the new stock of every bundle that uses those items (this one
+    // included) and pushes it to both shops.
+    const { data: comps } = await supabase.from("bundle_components").select("component_variant_id, quantity").eq("bundle_variant_id", listing.variant_id);
+    if (comps?.length) {
+      const { data: bv } = await supabase.from("variants").select("product_id").eq("id", listing.variant_id).maybeSingle();
+      orderRow.product_id = bv?.product_id ?? null;
+      // Take every item out first, then push, so bundles are worked out from the final figures.
+      const pushes: { id: string; stock: number }[] = [];
+      for (const c of comps) {
+        const { data: cinv } = await supabase.from("inventory").select("id, total_stock, product_id").eq("variant_id", c.component_variant_id).maybeSingle();
+        if (!cinv) continue;
+        const take = qty * Math.max(1, c.quantity);
+        const oldS = cinv.total_stock ?? 0, newS = Math.max(0, oldS - take);
+        await supabase.from("inventory").update({ total_stock: newS, updated_at: new Date().toISOString() }).eq("id", cinv.id);
+        await supabase.from("stock_log").insert({ variant_id: c.component_variant_id, product_id: cinv.product_id, old_stock: oldS, new_stock: newS, delta: newS - oldS, source: "order_sync", reason: "bundle_sale", note: `Part of a bundle sold: ${channel} order ${meta.order_number ?? meta.platform_order_id}` });
+        pushes.push({ id: c.component_variant_id, stock: newS });
+      }
+      for (const x of pushes) await pushStock(x.id, x.stock);
+      await supabase.from("orders").insert(orderRow);
+      return true;
+    }
     const { data: inv } = await supabase.from("inventory").select("id, total_stock, product_id").eq("variant_id", listing.variant_id).maybeSingle();
     if (inv) {
       const oldS = inv.total_stock ?? 0, newS = Math.max(0, oldS - qty);

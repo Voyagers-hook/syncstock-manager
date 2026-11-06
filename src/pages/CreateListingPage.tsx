@@ -5,12 +5,14 @@ import { supabase } from "@/integrations/supabase/client";
 import { buildListing, escapeHtml, parseListing, specRowsWithBrand, type SpecRow } from "@/lib/listing-converter";
 import { FEE_RATES } from "@/hooks/use-sales";
 import { toast } from "sonner";
+import { BundleItems } from "@/components/bundles/BundleItems";
+import { fetchItemInfo, totalsFor, type BundleItem } from "@/lib/bundles";
 
 // Create listing: one form lists a new product on eBay (with the template) and/or the
 // Squarespace website, and saves it in SyncStock as ONE product with both shops linked.
 // All the work happens in the create-listing edge function.
 
-interface VariationRow { value: string; sku: string; price: string; webPrice: string; stock: string; photo: string; weightKg?: string; salePrice?: string }
+interface VariationRow { value: string; sku: string; price: string; webPrice: string; stock: string; photo: string; weightKg?: string; salePrice?: string; components?: BundleItem[]; cost?: string }
 interface Aspect { name: string; required: boolean; mode: string; multi: boolean; usage: string; forVariations: boolean; values: string[] }
 interface Category { id: string; name: string; path: string }
 interface Setup {
@@ -27,6 +29,9 @@ interface CreateResult {
 interface Draft { id: string; title: string; updated_at: string; data: FormState }
 
 interface FormState {
+  // Bundle: made of other items. Stock and cost are worked out from them, never typed in.
+  isBundle: boolean;
+  components: BundleItem[]; // used when the bundle has no options; options carry their own
   title: string;
   condition: string;
   brand: string;
@@ -74,7 +79,9 @@ const CONDITIONS: { id: string; label: string }[] = [
   { id: "3000", label: "Used" },
 ];
 
-const blank = (): FormState => ({
+const blank = (isBundle = false): FormState => ({
+  isBundle,
+  components: [],
   title: "",
   condition: "1000",
   brand: "",
@@ -182,10 +189,10 @@ function websiteHtml(product: string, specs: SpecRow[], title: string): string {
   return (body && !body.startsWith("<") ? `<p>${body}</p>` : body) + table;
 }
 
-const CreateListingPage = () => {
+const CreateListingPage = ({ bundle = false }: { bundle?: boolean }) => {
   const qc = useQueryClient();
   const [view, setView] = useState<"new" | "drafts">("new");
-  const [f, setF] = useState<FormState>(blank);
+  const [f, setF] = useState<FormState>(() => blank(bundle));
   const [draftId, setDraftId] = useState<string | null>(null);
   const [formKey, setFormKey] = useState(0); // bumps when a draft/copy loads, to refill the text editor
   const set = <K extends keyof FormState>(k: K, v: FormState[K]) => setF((s) => ({ ...s, [k]: v }));
@@ -193,6 +200,42 @@ const CreateListingPage = () => {
   const setupQ = useQuery({ queryKey: ["create-listing-setup"], queryFn: () => cl<Setup>({ action: "setup" }), staleTime: 30 * 60 * 1000 });
   const draftsQ = useQuery({ queryKey: ["listing-drafts"], queryFn: async () => (await cl<{ drafts: Draft[] }>({ action: "drafts" })).drafts });
   const setup = setupQ.data;
+
+  // ── bundles: live stock and cost of the items, and the bundle figures worked out from them ──
+  const bundleIds = useMemo(
+    () => (f.isBundle ? [...new Set([...f.components, ...f.variations.flatMap((v) => v.components ?? [])].map((c) => c.variantId))].sort() : []),
+    [f.isBundle, f.components, f.variations],
+  );
+  const bundleInfoQ = useQuery({
+    queryKey: ["bundle-info", bundleIds],
+    enabled: bundleIds.length > 0,
+    queryFn: () => fetchItemInfo(bundleIds),
+    refetchInterval: 60 * 1000,
+  });
+  const bundleInfo = bundleInfoQ.data;
+  useEffect(() => {
+    if (!f.isBundle) return;
+    setF((s) => {
+      let changed = false;
+      const next = { ...s };
+      if (!s.hasVariations) {
+        const t = totalsFor(s.components, bundleInfo);
+        const st = String(t.stock), co = s.components.length && t.cost > 0 ? t.cost.toFixed(2) : "";
+        if (s.stock !== st) { next.stock = st; changed = true; }
+        if (s.costPrice !== co) { next.costPrice = co; changed = true; }
+      } else {
+        const vars = s.variations.map((v) => {
+          const t = totalsFor(v.components ?? [], bundleInfo);
+          const st = String(t.stock), co = (v.components ?? []).length && t.cost > 0 ? t.cost.toFixed(2) : "";
+          if (v.stock === st && (v.cost ?? "") === co) return v;
+          changed = true;
+          return { ...v, stock: st, cost: co };
+        });
+        next.variations = vars;
+      }
+      return changed ? next : s;
+    });
+  }, [f.isBundle, f.hasVariations, f.components, f.variations, bundleInfo]);
 
   // Default the website shop page to the first enabled one.
   useEffect(() => {
@@ -263,6 +306,7 @@ const CreateListingPage = () => {
           ...(v.photo !== "" ? { photo: Number(v.photo) } : {}),
           ...(num(v.weightKg || "") > 0 ? { weightKg: num(v.weightKg || "") } : {}),
           ...(f.onSale && num(v.salePrice || "") > 0 ? { salePrice: num(v.salePrice || "") } : {}),
+          ...(f.isBundle ? { components: (v.components ?? []).map((c) => ({ variantId: c.variantId, qty: c.qty })), ...(num(v.cost || "") > 0 ? { costPrice: num(v.cost || "") } : {}) } : {}),
         }))
       : [];
     return {
@@ -282,6 +326,9 @@ const CreateListingPage = () => {
       specifics,
       variationName: f.hasVariations ? f.variationName.trim() : undefined,
       variations: vars,
+      ...(f.isBundle
+        ? { isBundle: true, components: f.hasVariations ? undefined : f.components.map((c) => ({ variantId: c.variantId, qty: c.qty })) }
+        : {}),
       toEbay: f.toEbay,
       toWebsite: f.toWebsite,
       website: f.toWebsite
@@ -310,7 +357,10 @@ const CreateListingPage = () => {
     : num(f.price) > 0;
   const varNames = f.variations.map((v) => v.value.trim().toLowerCase());
   const varsUnique = new Set(varNames).size === varNames.length;
+  const bundleSets = f.hasVariations ? f.variations.map((v) => v.components ?? []) : [f.components];
+  const bundleItemsOk = bundleSets.length > 0 && bundleSets.every((x) => x.length > 0);
   const checks: { label: string; ok: boolean; hint?: string; show: boolean }[] = [
+    { label: "Items in the bundle", ok: bundleItemsOk, hint: f.hasVariations ? "Every option needs its items" : "Add at least one item", show: f.isBundle },
     { label: "Title, price and stock", ok: !!f.title.trim() && f.title.length <= 80 && priceOk && varsUnique, hint: f.title.length > 80 ? "Title is over 80 characters" : !varsUnique ? "Two options have the same name" : undefined, show: true },
     { label: "Photos", ok: f.photos.length > 0, show: true },
     { label: "Description", ok: f.product.replace(/<[^>]+>/g, "").trim().length > 0, show: true },
@@ -393,6 +443,7 @@ const CreateListingPage = () => {
   };
   const openDraft = (d: Draft) => {
     setF({ ...blank(), ...d.data });
+    if (!!d.data?.isBundle !== bundle) toast.message(d.data?.isBundle ? "This draft is a bundle." : "This draft is a normal listing, not a bundle.");
     setDraftId(d.id);
     setResult(null);
     setCheck(null);
@@ -409,7 +460,7 @@ const CreateListingPage = () => {
     }
   };
   const startNew = () => {
-    setF(blank());
+    setF(blank(bundle));
     setDraftId(null);
     setResult(null);
     setCheck(null);
@@ -442,7 +493,8 @@ const CreateListingPage = () => {
       const specifics: Record<string, string> = {};
       for (const [k, v] of Object.entries(it.specifics || {})) specifics[k] = v.join("; ");
       setF({
-        ...blank(),
+        ...blank(f.isBundle),
+        components: f.components,
         storePageId: f.storePageId,
         title: it.title || "",
         headline,
@@ -480,7 +532,7 @@ const CreateListingPage = () => {
   const num_ = (_name: string) => ++sectionNo;
 
   return (
-    <ConceptLayout title="Create listing" subtitle="One form, listed on eBay and your website">
+    <ConceptLayout title={f.isBundle ? "Create bundle" : "Create listing"} subtitle={f.isBundle ? "Build a bundle from your stock. Selling it takes the items out of stock." : "One form, listed on eBay and your website"}>
       <div className="cl-top">
         <div className="seg">
           <button className={view === "new" ? "on" : ""} onClick={() => setView("new")}>{draftId ? "Draft" : "New"}</button>
@@ -513,7 +565,7 @@ const CreateListingPage = () => {
             drafts.map((d) => (
               <div className="cl-draft" key={d.id}>
                 <div>
-                  <b>{d.title}</b>
+                  <b>{d.data?.isBundle ? "Bundle: " : ""}{d.title}</b>
                   <small>Saved {new Date(d.updated_at).toLocaleString("en-GB", { dateStyle: "medium", timeStyle: "short" })}</small>
                 </div>
                 <button className="btn primary" onClick={() => openDraft(d)}>Open</button>
@@ -539,6 +591,34 @@ const CreateListingPage = () => {
                 </label>
               </div>
             </Section>
+            {f.isBundle && (
+              <Section n={num_("bundle")} title="What's in the bundle" badge={bundleItemsOk ? "Done" : undefined}>
+                {!f.hasVariations ? (
+                  <BundleItems items={f.components} onChange={(c) => set("components", c)} info={bundleInfo} />
+                ) : (
+                  <>
+                    {f.variations.map((v, i) => (
+                      <BundleItems
+                        key={i}
+                        heading={`${f.variationName || "Option"}: ${v.value || `option ${i + 1}`}`}
+                        items={v.components ?? []}
+                        info={bundleInfo}
+                        onChange={(c) => set("variations", f.variations.map((r, j) => (j === i ? { ...r, components: c } : r)))}
+                      />
+                    ))}
+                    {f.variations.length > 1 && (f.variations[0].components ?? []).length > 0 && (
+                      <button className="btn ghost" onClick={() => set("variations", f.variations.map((r, j) => (j === 0 ? r : { ...r, components: [...(f.variations[0].components ?? [])] })))}>
+                        Copy the first option's items to every option
+                      </button>
+                    )}
+                  </>
+                )}
+                <div className="note" style={{ marginBottom: 0 }}>
+                  The bundle's stock is the number you can make from what's in stock. When a bundle sells on eBay or the website, each item comes out of stock and every listing is updated. If an item sells on its own, the bundle goes down too.
+                  {f.hasVariations ? " Each option has its own items, for example a jacket in that size." : " Tick options in the Variations section if the bundle comes in sizes or colours."}
+                </div>
+              </Section>
+            )}
             <ProductSection n={num_("product")} f={f} set={set} />
             <PhotosSection n={num_("photos")} f={f} set={set} />
             <DescriptionSection key={formKey} n={num_("description")} f={f} set={set} />
@@ -719,8 +799,8 @@ const ProductSection = ({ n, f, set }: { n: number; f: FormState; set: SetFn }) 
       <div className="cl-row4">
         <div className="fld"><label>Brand</label><input value={f.brand} onChange={(e) => set("brand", e.target.value)} /></div>
         <div className="fld"><label>Your SKU</label><input value={f.sku} onChange={(e) => set("sku", e.target.value)} placeholder={f.hasVariations ? "Optional" : "Optional"} /></div>
-        <div className="fld"><label>Stock</label><input inputMode="numeric" value={f.hasVariations ? "Set per option" : f.stock} disabled={f.hasVariations} onChange={(e) => set("stock", e.target.value)} /></div>
-        <div className="fld"><label>Cost price</label><input inputMode="decimal" value={f.costPrice} onChange={(e) => set("costPrice", e.target.value)} placeholder="£" /></div>
+        <div className="fld"><label>Stock{f.isBundle ? " (from the items)" : ""}</label><input inputMode="numeric" value={f.hasVariations ? "Set per option" : f.stock} disabled={f.hasVariations || f.isBundle} onChange={(e) => set("stock", e.target.value)} /></div>
+        <div className="fld"><label>Cost price{f.isBundle ? " (from the items)" : ""}</label><input inputMode="decimal" value={f.isBundle && f.hasVariations ? "Per option" : f.costPrice} disabled={f.isBundle} onChange={(e) => set("costPrice", e.target.value)} placeholder="£" /></div>
       </div>
       {f.hasVariations && (
         <div className="fld" style={{ maxWidth: 260 }}>
@@ -1014,7 +1094,7 @@ const VariationsSection = ({ n, f, set }: { n: number; f: FormState; set: SetFn 
   ].join(" ");
   const ebayProfit = (v: VariationRow) => {
     const pr = num(v.price);
-    return pr > 0 ? pr - fee("ebay", pr) - num(f.costPrice) - num(f.postageCost) : null;
+    return pr > 0 ? pr - fee("ebay", pr) - (f.isBundle ? num(v.cost || "") : num(f.costPrice)) - num(f.postageCost) : null;
   };
   return (
     <Section n={n} title="Variations" badge={f.hasVariations && f.variations.length ? `${f.variations.length} options` : undefined}>
@@ -1026,12 +1106,12 @@ const VariationsSection = ({ n, f, set }: { n: number; f: FormState; set: SetFn 
             onChange={(e) => {
               set("hasVariations", e.target.checked);
               if (e.target.checked && !f.variations.length) {
-                const base = { ...emptyVar(), price: f.price, webPrice: f.webPrice || suggestWeb(f.price) };
+                const base = { ...emptyVar(), price: f.price, webPrice: f.webPrice || suggestWeb(f.price), ...(f.isBundle ? { components: [...f.components] } : {}) };
                 set("variations", [{ ...base }, { ...base }]);
               }
             }}
           />{" "}
-          This item comes in options (colours, sizes, weights)
+          {f.isBundle ? "This bundle comes in options (sizes, colours)" : "This item comes in options (colours, sizes, weights)"}
         </label>
       </div>
       {f.hasVariations && (
@@ -1052,7 +1132,7 @@ const VariationsSection = ({ n, f, set }: { n: number; f: FormState; set: SetFn 
                 <input inputMode="decimal" value={v.price} onChange={(e) => upd(i, "price", e.target.value)} placeholder="£" />
                 <input inputMode="decimal" value={v.webPrice} onChange={(e) => upd(i, "webPrice", e.target.value)} placeholder="£" />
                 {web && f.onSale && <input inputMode="decimal" value={v.salePrice ?? ""} onChange={(e) => upd(i, "salePrice", e.target.value)} placeholder="£" aria-label="Website sale price" />}
-                <input inputMode="numeric" value={v.stock} onChange={(e) => upd(i, "stock", e.target.value)} />
+                <input inputMode="numeric" value={v.stock} disabled={f.isBundle} title={f.isBundle ? "Worked out from the items in this option" : undefined} onChange={(e) => upd(i, "stock", e.target.value)} />
                 {web && <input inputMode="decimal" value={v.weightKg ?? ""} onChange={(e) => upd(i, "weightKg", e.target.value)} placeholder={f.weightKg || "kg"} aria-label="Weight in kg" />}
                 <select value={v.photo} onChange={(e) => upd(i, "photo", e.target.value)}>
                   <option value="">None</option>

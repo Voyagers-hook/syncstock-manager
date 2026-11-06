@@ -142,7 +142,8 @@ const App = () => {
             <Route path="/title-cleanup" element={<TitleCleanupPage />} />
             <Route path="/sell-similar" element={<SellSimilarPage />} />
             <Route path="/postage" element={<PostagePage />} />
-            <Route path="/create-listing" element={<CreateListingPage />} />
+            <Route path="/create-listing" element={<CreateListingPage key="listing" />} />
+            <Route path="/create-bundle" element={<CreateListingPage key="bundle" bundle />} />
             <Route path="/settings" element={<SettingsPage />} />
             <Route path="*" element={<NotFound />} />
           </Routes>

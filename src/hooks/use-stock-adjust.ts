@@ -1,5 +1,6 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { supabase } from "@/integrations/supabase/client";
+import { assertNotBundle } from "@/lib/bundles";
 
 export interface StockAdjustInput {
   inventoryId: string;
@@ -19,6 +20,7 @@ export function useStockAdjust() {
 
   return useMutation({
     mutationFn: async (input: StockAdjustInput) => {
+      await assertNotBundle(input.variantId);
       const now = new Date().toISOString();
 
       const { error: invErr } = await supabase

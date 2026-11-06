@@ -55,38 +55,82 @@ Deno.serve(async (req) => {
     .from("sync_secrets").select("value").eq("key", "squarespace_api_key").maybeSingle();
   const sqApiKey = sqKeyRow?.value ?? Deno.env.get("SQUARESPACE_API_KEY") ?? Deno.env.get("SQUARESPACE_API");
 
-  const { data: listings, error: listErr } = await supabase
-    .from("channel_listings")
-    .select("*")
-    .eq("variant_id", variantId);
+  const results: { channel: string; status: string; message?: string; variantId?: string }[] = [];
+  const tokenBox: { ebay: string | null } = { ebay: null };
 
+  // Bundles hold no stock of their own. If this variant is a bundle, ignore the figure we
+  // were given and use the one worked out from its components, so it can never drift.
+  let effStock = stock;
+  if (stock !== undefined) {
+    const calc = await bundleStock(supabase, variantId);
+    if (calc !== null) {
+      effStock = calc;
+      await setInventory(supabase, variantId, calc, "bundle_calc");
+    }
+  }
+
+  const listErr = await pushToListings(supabase, variantId, effStock, price, channel, priceType, sq_on_sale, sq_base_price, sq_sale_price, sqApiKey, tokenBox, results);
   if (listErr) {
-    return new Response(JSON.stringify({ error: `DB error: ${listErr.message}` }), {
+    return new Response(JSON.stringify({ error: `DB error: ${listErr}` }), {
       status: 500,
       headers: { ...corsHeaders, "Content-Type": "application/json" },
     });
   }
 
-  if (!listings || listings.length === 0) {
-    return new Response(JSON.stringify({ ok: true, results: [], note: "No channel listings for this variant" }), {
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+  // If this item is part of any bundles, work out each bundle's new stock and push it too.
+  // Only stock changes ripple to bundles; price changes never do.
+  let bundlesUpdated = 0;
+  if (stock !== undefined) {
+    const { data: parents } = await supabase
+      .from("bundle_components").select("bundle_variant_id").eq("component_variant_id", variantId);
+    const ids: string[] = [...new Set<string>((parents ?? []).map((r: any) => String(r.bundle_variant_id)))];
+    for (const bid of ids) {
+      try {
+        const calc = await bundleStock(supabase, bid);
+        if (calc === null) continue;
+        const changed = await setInventory(supabase, bid, calc, "bundle_component_change", variantId);
+        if (!changed) continue;
+        bundlesUpdated++;
+        await pushToListings(supabase, bid, calc, undefined, undefined, "base", undefined, undefined, undefined, sqApiKey, tokenBox, results);
+      } catch (err: any) {
+        results.push({ channel: "bundle", status: "error", message: err.message, variantId: bid });
+      }
+    }
   }
 
-  const targetListings = channel ? listings.filter((l: any) => l.channel === channel) : listings;
+  const anyFailed = results.some((r) => r.status === "error");
+  return new Response(
+    JSON.stringify({ ok: !anyFailed, results, bundlesUpdated, ...(effStock !== stock ? { bundleStock: effStock } : {}) }),
+    {
+      status: anyFailed ? 207 : 200,
+      headers: { ...corsHeaders, "Content-Type": "application/json" },
+    }
+  );
+});
 
-  const results: { channel: string; status: string; message?: string }[] = [];
-  let ebayToken: string | null = null;
+// Push stock and/or price for one variant to every shop it is listed on (or just one channel).
+// Returns an error message if the listings couldn't be read, otherwise null.
+async function pushToListings(
+  supabase: any, variantId: string, stock: number | undefined, price: number | undefined,
+  channel: string | undefined, priceType: "base" | "sale",
+  sq_on_sale: boolean | undefined, sq_base_price: number | undefined, sq_sale_price: number | undefined,
+  sqApiKey: string | undefined, tokenBox: { ebay: string | null },
+  results: { channel: string; status: string; message?: string; variantId?: string }[],
+): Promise<string | null> {
+  const { data: listings, error: listErr } = await supabase
+    .from("channel_listings")
+    .select("*")
+    .eq("variant_id", variantId);
+  if (listErr) return listErr.message;
+  const targetListings = channel ? (listings ?? []).filter((l: any) => l.channel === channel) : (listings ?? []);
 
   for (const listing of targetListings) {
     try {
       if (listing.channel === "ebay") {
-        if (!ebayToken) {
-          ebayToken = await getEbayAccessToken(supabase);
-        }
+        if (!tokenBox.ebay) tokenBox.ebay = await getEbayAccessToken(supabase);
         // eBay has no base/sale distinction — StartPrice is always the actual price
-        const ebayResult = await pushEbayUpdate(listing, stock, price, ebayToken!);
-        results.push({ channel: "ebay", status: "success", message: ebayResult });
+        const ebayResult = await pushEbayUpdate(listing, stock, price, tokenBox.ebay!);
+        results.push({ channel: "ebay", status: "success", message: ebayResult, variantId });
       } else if (listing.channel === "squarespace") {
         if (!sqApiKey) throw new Error("Squarespace API key not found in sync_secrets or env");
         await pushSquarespaceUpdate(
@@ -96,22 +140,48 @@ Deno.serve(async (req) => {
           sqApiKey,
           priceType
         );
-        results.push({ channel: "squarespace", status: "success" });
+        results.push({ channel: "squarespace", status: "success", variantId });
       }
     } catch (err: any) {
-      results.push({ channel: listing.channel, status: "error", message: err.message });
+      results.push({ channel: listing.channel, status: "error", message: err.message, variantId });
     }
   }
+  return null;
+}
 
-  const anyFailed = results.some((r) => r.status === "error");
-  return new Response(
-    JSON.stringify({ ok: !anyFailed, results }),
-    {
-      status: anyFailed ? 207 : 200,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    }
-  );
-});
+// ── Bundles ──────────────────────────────────────────────────────────────────
+// A bundle's stock = the lowest of floor(component stock / quantity needed).
+// Returns null if the variant is not a bundle (has no components).
+async function bundleStock(supabase: any, bundleVariantId: string): Promise<number | null> {
+  const { data: comps } = await supabase
+    .from("bundle_components").select("component_variant_id, quantity").eq("bundle_variant_id", bundleVariantId);
+  if (!comps?.length) return null;
+  const { data: inv } = await supabase
+    .from("inventory").select("variant_id, total_stock").in("variant_id", comps.map((c: any) => c.component_variant_id));
+  const have = new Map<string, number>((inv ?? []).map((i: any) => [i.variant_id, Math.max(0, i.total_stock ?? 0)]));
+  let min = Infinity;
+  for (const c of comps) min = Math.min(min, Math.floor((have.get(c.component_variant_id) ?? 0) / Math.max(1, c.quantity)));
+  return Number.isFinite(min) ? min : 0;
+}
+
+// Save a worked-out bundle stock figure. Returns true if it changed.
+async function setInventory(supabase: any, variantId: string, stock: number, reason: string, causedBy?: string): Promise<boolean> {
+  const { data: inv } = await supabase.from("inventory").select("id, total_stock, product_id").eq("variant_id", variantId).maybeSingle();
+  const now = new Date().toISOString();
+  if (!inv) {
+    const { data: v } = await supabase.from("variants").select("product_id").eq("id", variantId).maybeSingle();
+    await supabase.from("inventory").insert({ variant_id: variantId, product_id: v?.product_id ?? null, total_stock: stock });
+    return true;
+  }
+  if ((inv.total_stock ?? 0) === stock) return false;
+  await supabase.from("inventory").update({ total_stock: stock, updated_at: now }).eq("id", inv.id);
+  await supabase.from("stock_log").insert({
+    variant_id: variantId, product_id: inv.product_id, old_stock: inv.total_stock ?? 0, new_stock: stock,
+    delta: stock - (inv.total_stock ?? 0), source: "bundle", reason,
+    note: causedBy ? `Worked out from component ${causedBy}` : "Worked out from its components",
+  });
+  return true;
+}
 
 // ── eBay ─────────────────────────────────────────────────────────────────────
 // Fetch variation specifics from eBay GetItem so we can use VariationSpecifics
