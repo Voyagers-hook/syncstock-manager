@@ -675,12 +675,39 @@ const CreateListingPage = ({ bundle = false }: { bundle?: boolean }) => {
                             return lo === hi ? gbp(lo) : `${gbp(lo)} to ${gbp(hi)}`;
                           };
                           const missing = tots.some((t) => !t.costKnown);
+                          const priced = f.variations.map((v, i) => ({ v, t: tots[i] })).filter(({ v }) => num(v.price) > 0);
+                          const eProfits = priced.map(({ v, t }) => num(v.price) - fee("ebay", num(v.price)) - t.cost - num(f.postageCost));
+                          const sProfits = priced.map(({ v, t }) => { const w = num(v.webPrice) || num(v.price); return w - fee("squarespace", w) - t.cost; });
+                          const prange = (xs: number[]) => {
+                            const lo = Math.min(...xs), hi = Math.max(...xs);
+                            return <b className={lo < 0 ? "neg" : ""}>{lo === hi ? gbp(lo) : `${gbp(lo)} to ${gbp(hi)}`}</b>;
+                          };
                           return (
-                            <div className="cl-profit" style={{ marginTop: 10 }}>
-                              <div><span>Cost of the items{missing ? " (some costs not set)" : ""}</span><b className="plain">{range(tots.map((t) => t.cost))}</b></div>
-                              <div><span>Items bought separately</span><b className="plain">{range(tots.map((t) => t.rrp))}</b></div>
-                              <div><span>Bundles you can make</span><b className="plain">{tots.reduce((n, t) => n + t.stock, 0)} across all options</b></div>
-                            </div>
+                            <>
+                              <div className="cl-profit" style={{ marginTop: 10 }}>
+                                <div><span>Cost of the items{missing ? " (some costs not set)" : ""}</span><b className="plain">{range(tots.map((t) => t.cost))}</b></div>
+                                <div><span>Items bought separately</span><b className="plain">{range(tots.map((t) => t.rrp))}</b></div>
+                                <div><span>Bundles you can make</span><b className="plain">{tots.reduce((n, t) => n + t.stock, 0)} across all options</b></div>
+                              </div>
+                              <div className="cl-profit" style={{ marginTop: 10 }}>
+                                {priced.length ? (
+                                  <>
+                                    <div><span>eBay profit{!num(f.postageCost) && f.free ? " (add your eBay postage)" : ""}</span>{prange(eProfits)}</div>
+                                    <div><span>Website profit</span>{prange(sProfits)}</div>
+                                    <div><span>Priced options</span><b className="plain">{priced.length} of {f.variations.length}</b></div>
+                                  </>
+                                ) : (
+                                  <div style={{ gridColumn: "1 / -1" }}><span>Profit</span><b className="plain">Add a price above to see the profit</b></div>
+                                )}
+                              </div>
+                              <div className="fld" style={{ maxWidth: 260, marginTop: 10 }}>
+                                <label title="Only used for the profit figures. Buyers never see it.">Your eBay postage</label>
+                                <input inputMode="decimal" value={f.postageCost} placeholder="£" onChange={(e) => set("postageCost", e.target.value)} />
+                              </div>
+                              <div className="note" style={{ marginBottom: 0 }}>
+                                eBay profit is after eBay fees, the cost of the items and your postage. Website profit is after Squarespace fees and the cost of the items; buyers pay postage on the website.
+                              </div>
+                            </>
                           );
                         })()}
                       </>
@@ -897,7 +924,7 @@ const ProductSection = ({ n, f, set }: { n: number; f: FormState; set: SetFn }) 
         <div className="fld"><label>Stock{f.isBundle ? " (from the items)" : ""}</label><input inputMode="numeric" value={f.hasVariations ? "Set per option" : f.stock} disabled={f.hasVariations || f.isBundle} onChange={(e) => set("stock", e.target.value)} /></div>
         <div className="fld"><label>Cost price{f.isBundle ? " (from the items)" : ""}</label><input inputMode="decimal" value={f.isBundle && f.hasVariations ? "Per option" : f.costPrice} disabled={f.isBundle} onChange={(e) => set("costPrice", e.target.value)} placeholder="£" /></div>
       </div>
-      {f.hasVariations && (
+      {f.hasVariations && !f.autoOptions && (
         <div className="fld" style={{ maxWidth: 260 }}>
           <label title="Only used for the profit figures. Buyers never see it.">Your eBay postage</label>
           <input inputMode="decimal" value={f.postageCost} placeholder="£" onChange={(e) => set("postageCost", e.target.value)} />
@@ -1185,7 +1212,7 @@ const VariationsSection = ({ n, f, set }: { n: number; f: FormState; set: SetFn 
   const web = f.toWebsite;
   const cols = [
     "minmax(110px,1.2fr)", "minmax(110px,1.2fr)", "84px", "84px",
-    ...(web && f.onSale ? ["84px"] : []), "64px", ...(f.isBundle ? ["72px"] : []), ...(web ? ["78px"] : []), "100px", "84px", "40px",
+    ...(web && f.onSale ? ["84px"] : []), "64px", ...(f.isBundle ? ["72px"] : []), ...(web ? ["78px"] : []), "100px", "84px", ...(f.isBundle && web ? ["84px"] : []), "40px",
   ].join(" ");
   const ebayProfit = (v: VariationRow) => {
     const pr = num(v.price);
@@ -1219,7 +1246,7 @@ const VariationsSection = ({ n, f, set }: { n: number; f: FormState; set: SetFn 
           <div className="cl-vars">
             <div className="cl-var head" style={{ gridTemplateColumns: cols }}>
               <span>{f.variationName || "Option"}</span><span>SKU</span><span>eBay price</span><span>Website</span>
-              {web && f.onSale && <span>Sale</span>}<span>Stock</span>{f.isBundle && <span>Cost</span>}{web && <span>Weight kg</span>}<span>Photo</span><span>eBay profit</span><span />
+              {web && f.onSale && <span>Sale</span>}<span>Stock</span>{f.isBundle && <span>Cost</span>}{web && <span>Weight kg</span>}<span>Photo</span><span>eBay profit</span>{f.isBundle && web && <span>Web profit</span>}<span />
             </div>
             {f.variations.map((v, i) => (
               <div className="cl-var" key={i} style={{ gridTemplateColumns: cols }}>
@@ -1237,6 +1264,11 @@ const VariationsSection = ({ n, f, set }: { n: number; f: FormState; set: SetFn 
                 </select>
                 {(() => {
                   const pf = ebayProfit(v);
+                  return <span className={`cl-vprofit${pf !== null && pf < 0 ? " neg" : ""}`}>{pf === null ? "-" : gbp(pf)}</span>;
+                })()}
+                {f.isBundle && web && (() => {
+                  const w = num(v.webPrice) || num(v.price);
+                  const pf = w > 0 ? w - fee("squarespace", w) - num(v.cost || "") : null;
                   return <span className={`cl-vprofit${pf !== null && pf < 0 ? " neg" : ""}`}>{pf === null ? "-" : gbp(pf)}</span>;
                 })()}
                 <button className="btn ghost" aria-label="Remove option" disabled={f.autoOptions} title={f.autoOptions ? "Untick the choice in What's in the bundle instead" : undefined} onClick={() => set("variations", f.variations.filter((_, j) => j !== i))}>×</button>
