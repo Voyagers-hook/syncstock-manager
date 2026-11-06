@@ -146,7 +146,9 @@ export function BundleItems({
                   >
                     <input type="checkbox" checked={c.on} onChange={(e) => upd(i, { choices: (it.choices ?? []).map((x, m) => (m === k ? { ...x, on: e.target.checked } : x)) })} />
                     {c.label}
-                    <span style={{ color: inf && inf.stock < it.qty ? "var(--out)" : "var(--muted)" }}>{inf ? `(${inf.stock})` : ""}</span>
+                    <span style={{ color: inf && inf.stock < it.qty ? "var(--out)" : "var(--muted)" }}>
+                      {inf ? `${inf.stock} in stock · ${inf.cost != null ? gbp(inf.cost * it.qty) : "no cost set"}` : ""}
+                    </span>
                   </label>
                 );
               })}

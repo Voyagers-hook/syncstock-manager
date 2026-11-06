@@ -668,6 +668,21 @@ const CreateListingPage = ({ bundle = false }: { bundle?: boolean }) => {
                           </div>
                           <div className="fld"><label>&nbsp;</label><div className="note" style={{ margin: 0 }}>Change any single option's price in the Variations section.</div></div>
                         </div>
+                        {f.variations.length > 0 && (() => {
+                          const tots = f.variations.map((v) => totalsFor(v.components ?? [], bundleInfo));
+                          const range = (xs: number[]) => {
+                            const lo = Math.min(...xs), hi = Math.max(...xs);
+                            return lo === hi ? gbp(lo) : `${gbp(lo)} to ${gbp(hi)}`;
+                          };
+                          const missing = tots.some((t) => !t.costKnown);
+                          return (
+                            <div className="cl-profit" style={{ marginTop: 10 }}>
+                              <div><span>Cost of the items{missing ? " (some costs not set)" : ""}</span><b className="plain">{range(tots.map((t) => t.cost))}</b></div>
+                              <div><span>Items bought separately</span><b className="plain">{range(tots.map((t) => t.rrp))}</b></div>
+                              <div><span>Bundles you can make</span><b className="plain">{tots.reduce((n, t) => n + t.stock, 0)} across all options</b></div>
+                            </div>
+                          );
+                        })()}
                       </>
                     )}
                   </>
@@ -1170,7 +1185,7 @@ const VariationsSection = ({ n, f, set }: { n: number; f: FormState; set: SetFn 
   const web = f.toWebsite;
   const cols = [
     "minmax(110px,1.2fr)", "minmax(110px,1.2fr)", "84px", "84px",
-    ...(web && f.onSale ? ["84px"] : []), "64px", ...(web ? ["78px"] : []), "100px", "84px", "40px",
+    ...(web && f.onSale ? ["84px"] : []), "64px", ...(f.isBundle ? ["72px"] : []), ...(web ? ["78px"] : []), "100px", "84px", "40px",
   ].join(" ");
   const ebayProfit = (v: VariationRow) => {
     const pr = num(v.price);
@@ -1204,7 +1219,7 @@ const VariationsSection = ({ n, f, set }: { n: number; f: FormState; set: SetFn 
           <div className="cl-vars">
             <div className="cl-var head" style={{ gridTemplateColumns: cols }}>
               <span>{f.variationName || "Option"}</span><span>SKU</span><span>eBay price</span><span>Website</span>
-              {web && f.onSale && <span>Sale</span>}<span>Stock</span>{web && <span>Weight kg</span>}<span>Photo</span><span>eBay profit</span><span />
+              {web && f.onSale && <span>Sale</span>}<span>Stock</span>{f.isBundle && <span>Cost</span>}{web && <span>Weight kg</span>}<span>Photo</span><span>eBay profit</span><span />
             </div>
             {f.variations.map((v, i) => (
               <div className="cl-var" key={i} style={{ gridTemplateColumns: cols }}>
@@ -1214,6 +1229,7 @@ const VariationsSection = ({ n, f, set }: { n: number; f: FormState; set: SetFn 
                 <input inputMode="decimal" value={v.webPrice} onChange={(e) => upd(i, "webPrice", e.target.value)} placeholder="£" />
                 {web && f.onSale && <input inputMode="decimal" value={v.salePrice ?? ""} onChange={(e) => upd(i, "salePrice", e.target.value)} placeholder="£" aria-label="Website sale price" />}
                 <input inputMode="numeric" value={v.stock} disabled={f.isBundle} title={f.isBundle ? "Worked out from the items in this option" : undefined} onChange={(e) => upd(i, "stock", e.target.value)} />
+                {f.isBundle && <span style={{ fontSize: 13 }} title="Cost of the items in this option">{num(v.cost || "") > 0 ? gbp(num(v.cost || "")) : "Not set"}</span>}
                 {web && <input inputMode="decimal" value={v.weightKg ?? ""} onChange={(e) => upd(i, "weightKg", e.target.value)} placeholder={f.weightKg || "kg"} aria-label="Weight in kg" />}
                 <select value={v.photo} onChange={(e) => upd(i, "photo", e.target.value)}>
                   <option value="">None</option>
