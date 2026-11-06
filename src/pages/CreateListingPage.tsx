@@ -6,13 +6,13 @@ import { buildListing, escapeHtml, parseListing, specRowsWithBrand, type SpecRow
 import { FEE_RATES } from "@/hooks/use-sales";
 import { toast } from "sonner";
 import { BundleItems } from "@/components/bundles/BundleItems";
-import { fetchItemInfo, totalsFor, type BundleItem } from "@/lib/bundles";
+import { fetchItemInfo, generateOptions, isChoose, totalsFor, type BundleItem } from "@/lib/bundles";
 
 // Create listing: one form lists a new product on eBay (with the template) and/or the
 // Squarespace website, and saves it in SyncStock as ONE product with both shops linked.
 // All the work happens in the create-listing edge function.
 
-interface VariationRow { value: string; sku: string; price: string; webPrice: string; stock: string; photo: string; weightKg?: string; salePrice?: string; components?: BundleItem[]; cost?: string }
+interface VariationRow { value: string; sku: string; price: string; webPrice: string; stock: string; photo: string; weightKg?: string; salePrice?: string; components?: BundleItem[]; cost?: string; specifics?: Record<string, string> }
 interface Aspect { name: string; required: boolean; mode: string; multi: boolean; usage: string; forVariations: boolean; values: string[] }
 interface Category { id: string; name: string; path: string }
 interface Setup {
@@ -32,6 +32,11 @@ interface FormState {
   // Bundle: made of other items. Stock and cost are worked out from them, never typed in.
   isBundle: boolean;
   components: BundleItem[]; // used when the bundle has no options; options carry their own
+  // Options made automatically from "customer chooses" items (one dropdown per item).
+  autoOptions: boolean;
+  variationNames: string[];
+  optionPrice: string;
+  optionWebPrice: string;
   title: string;
   condition: string;
   brand: string;
@@ -82,6 +87,10 @@ const CONDITIONS: { id: string; label: string }[] = [
 const blank = (isBundle = false): FormState => ({
   isBundle,
   components: [],
+  autoOptions: false,
+  variationNames: [],
+  optionPrice: "",
+  optionWebPrice: "",
   title: "",
   condition: "1000",
   brand: "",
@@ -203,7 +212,12 @@ const CreateListingPage = ({ bundle = false }: { bundle?: boolean }) => {
 
   // ── bundles: live stock and cost of the items, and the bundle figures worked out from them ──
   const bundleIds = useMemo(
-    () => (f.isBundle ? [...new Set([...f.components, ...f.variations.flatMap((v) => v.components ?? [])].map((c) => c.variantId))].sort() : []),
+    () => (f.isBundle
+      ? [...new Set([
+          ...f.components.flatMap((c) => (isChoose(c) ? (c.choices ?? []).map((x) => x.variantId) : [c.variantId])),
+          ...f.variations.flatMap((v) => v.components ?? []).map((c) => c.variantId),
+        ].filter(Boolean))].sort()
+      : []),
     [f.isBundle, f.components, f.variations],
   );
   const bundleInfoQ = useQuery({
@@ -213,6 +227,35 @@ const CreateListingPage = ({ bundle = false }: { bundle?: boolean }) => {
     refetchInterval: 60 * 1000,
   });
   const bundleInfo = bundleInfoQ.data;
+
+  // "Customer chooses" items turn into the bundle's options: one for every mix of ticked
+  // sizes/colours, each with the exact items that go in it. Prices and SKUs you've typed on
+  // an option are kept when the options are rebuilt.
+  useEffect(() => {
+    if (!f.isBundle) return;
+    const anyChoose = f.components.some(isChoose);
+    setF((s) => {
+      if (!anyChoose) {
+        if (!s.autoOptions) return s;
+        return { ...s, autoOptions: false, variationNames: [], hasVariations: false, variations: [], variationName: "Colour" };
+      }
+      const { names, options } = generateOptions(s.components);
+      const old = new Map(s.variations.map((v) => [v.value, v]));
+      const rows: VariationRow[] = options.map((o) => {
+        const prev = old.get(o.value);
+        return {
+          ...(prev ?? { ...emptyVar(), price: s.optionPrice, webPrice: s.optionWebPrice || suggestWeb(s.optionPrice) }),
+          value: o.value,
+          specifics: o.specifics,
+          components: o.components,
+        };
+      });
+      const sig = (vs: VariationRow[], ns: string[]) => JSON.stringify([ns, vs.map((v) => [v.value, v.specifics, (v.components ?? []).map((c) => [c.variantId, c.qty])])]);
+      if (s.autoOptions && s.hasVariations && sig(s.variations, s.variationNames) === sig(rows, names)) return s;
+      return { ...s, autoOptions: true, hasVariations: true, variationNames: names, variationName: names.join(" / "), variations: rows };
+    });
+  }, [f.isBundle, f.components]);
+
   useEffect(() => {
     if (!f.isBundle) return;
     setF((s) => {
@@ -257,8 +300,9 @@ const CreateListingPage = ({ bundle = false }: { bundle?: boolean }) => {
     const all = aspectsQ.data ?? [];
     const req = all.filter((a) => a.required);
     const rec = all.filter((a) => !a.required && a.usage === "RECOMMENDED").slice(0, 9);
-    return [...req, ...rec].filter((a) => !(f.hasVariations && a.name === f.variationName));
-  }, [aspectsQ.data, f.hasVariations, f.variationName]);
+    const varNames = f.autoOptions ? f.variationNames : [f.variationName];
+    return [...req, ...rec].filter((a) => !(f.hasVariations && varNames.includes(a.name)));
+  }, [aspectsQ.data, f.hasVariations, f.variationName, f.autoOptions, f.variationNames]);
 
   // Fill item specifics from the brand and the numbers where the names match.
   useEffect(() => {
@@ -307,6 +351,7 @@ const CreateListingPage = ({ bundle = false }: { bundle?: boolean }) => {
           ...(num(v.weightKg || "") > 0 ? { weightKg: num(v.weightKg || "") } : {}),
           ...(f.onSale && num(v.salePrice || "") > 0 ? { salePrice: num(v.salePrice || "") } : {}),
           ...(f.isBundle ? { components: (v.components ?? []).map((c) => ({ variantId: c.variantId, qty: c.qty })), ...(num(v.cost || "") > 0 ? { costPrice: num(v.cost || "") } : {}) } : {}),
+          ...(f.autoOptions && v.specifics ? { specifics: v.specifics } : {}),
         }))
       : [];
     return {
@@ -324,10 +369,11 @@ const CreateListingPage = ({ bundle = false }: { bundle?: boolean }) => {
       categoryId: f.category?.id ?? "",
       storeCategoryId: f.storeCategoryId || undefined,
       specifics,
-      variationName: f.hasVariations ? f.variationName.trim() : undefined,
+      variationName: f.hasVariations ? (f.autoOptions ? f.variationNames[0] : f.variationName.trim()) : undefined,
+      variationNames: f.hasVariations && f.autoOptions ? f.variationNames : undefined,
       variations: vars,
       ...(f.isBundle
-        ? { isBundle: true, components: f.hasVariations ? undefined : f.components.map((c) => ({ variantId: c.variantId, qty: c.qty })) }
+        ? { isBundle: true, components: f.hasVariations ? undefined : f.components.filter((c) => !isChoose(c)).map((c) => ({ variantId: c.variantId, qty: c.qty })) }
         : {}),
       toEbay: f.toEbay,
       toWebsite: f.toWebsite,
@@ -358,9 +404,11 @@ const CreateListingPage = ({ bundle = false }: { bundle?: boolean }) => {
   const varNames = f.variations.map((v) => v.value.trim().toLowerCase());
   const varsUnique = new Set(varNames).size === varNames.length;
   const bundleSets = f.hasVariations ? f.variations.map((v) => v.components ?? []) : [f.components];
+  const chooseNames = f.variationNames.map((n) => n.trim().toLowerCase());
+  const chooseOk = !f.autoOptions || (f.variations.length > 0 && f.variations.length <= 250 && chooseNames.every(Boolean) && new Set(chooseNames).size === chooseNames.length);
   const bundleItemsOk = bundleSets.length > 0 && bundleSets.every((x) => x.length > 0);
   const checks: { label: string; ok: boolean; hint?: string; show: boolean }[] = [
-    { label: "Items in the bundle", ok: bundleItemsOk, hint: f.hasVariations ? "Every option needs its items" : "Add at least one item", show: f.isBundle },
+    { label: "Items in the bundle", ok: bundleItemsOk && chooseOk, hint: f.autoOptions ? (f.variations.length > 250 ? `${f.variations.length} options; eBay allows 250` : !f.variations.length ? "Tick at least one choice on each item" : "Give every dropdown its own name") : f.hasVariations ? "Every option needs its items" : "Add at least one item", show: f.isBundle },
     { label: "Title, price and stock", ok: !!f.title.trim() && f.title.length <= 80 && priceOk && varsUnique, hint: f.title.length > 80 ? "Title is over 80 characters" : !varsUnique ? "Two options have the same name" : undefined, show: true },
     { label: "Photos", ok: f.photos.length > 0, show: true },
     { label: "Description", ok: f.product.replace(/<[^>]+>/g, "").trim().length > 0, show: true },
@@ -593,8 +641,36 @@ const CreateListingPage = ({ bundle = false }: { bundle?: boolean }) => {
             </Section>
             {f.isBundle && (
               <Section n={num_("bundle")} title="What's in the bundle" badge={bundleItemsOk ? "Done" : undefined}>
-                {!f.hasVariations ? (
-                  <BundleItems items={f.components} onChange={(c) => set("components", c)} info={bundleInfo} />
+                {!f.hasVariations || f.autoOptions ? (
+                  <>
+                    <BundleItems items={f.components} onChange={(c) => set("components", c)} info={bundleInfo} allowChoose={!f.hasVariations || f.autoOptions} hideTotals={f.autoOptions} />
+                    {f.autoOptions && (
+                      <>
+                        <div className={f.variations.length > 250 ? "lt-note warn" : "note"} style={{ marginTop: 0 }}>
+                          {f.variations.length
+                            ? `${f.variations.length} option${f.variations.length === 1 ? "" : "s"} for the customer to choose from (${f.variationNames.join(" and ")}). ${f.variations.filter((v) => num(v.stock) > 0).length} can be made from what's in stock now.${f.variations.length > 250 ? " eBay allows 250 at most, so untick some choices." : ""}`
+                            : "Tick at least one choice on each item."}
+                        </div>
+                        <div className="cl-row3">
+                          <div className="fld">
+                            <label>eBay price for every option</label>
+                            <input inputMode="decimal" value={f.optionPrice} placeholder="£" onChange={(e) => {
+                              const v = e.target.value;
+                              setF((s) => ({ ...s, optionPrice: v, optionWebPrice: s.optionWebPrice && s.optionWebPrice !== suggestWeb(s.optionPrice) ? s.optionWebPrice : suggestWeb(v), variations: s.variations.map((r) => ({ ...r, price: v, webPrice: r.webPrice && r.webPrice !== suggestWeb(r.price) ? r.webPrice : suggestWeb(v) })) }));
+                            }} />
+                          </div>
+                          <div className="fld">
+                            <label>Website price for every option <span className="cl-count">eBay minus 10%</span></label>
+                            <input inputMode="decimal" value={f.optionWebPrice} placeholder="£" onChange={(e) => {
+                              const v = e.target.value;
+                              setF((s) => ({ ...s, optionWebPrice: v, variations: s.variations.map((r) => ({ ...r, webPrice: v })) }));
+                            }} />
+                          </div>
+                          <div className="fld"><label>&nbsp;</label><div className="note" style={{ margin: 0 }}>Change any single option's price in the Variations section.</div></div>
+                        </div>
+                      </>
+                    )}
+                  </>
                 ) : (
                   <>
                     {f.variations.map((v, i) => (
@@ -615,7 +691,11 @@ const CreateListingPage = ({ bundle = false }: { bundle?: boolean }) => {
                 )}
                 <div className="note" style={{ marginBottom: 0 }}>
                   The bundle's stock is the number you can make from what's in stock. When a bundle sells on eBay or the website, each item comes out of stock and every listing is updated. If an item sells on its own, the bundle goes down too.
-                  {f.hasVariations ? " Each option has its own items, for example a jacket in that size." : " Tick options in the Variations section if the bundle comes in sizes or colours."}
+                  {f.autoOptions
+                    ? " Each item set to customer chooses becomes a dropdown on eBay and the website. Each option takes the exact size or colour picked out of stock."
+                    : f.hasVariations
+                    ? " Each option has its own items, for example a jacket in that size."
+                    : " Pick \"Whole listing, customer chooses\" when searching to let the buyer choose a size or colour, or tick options in the Variations section to set up sizes yourself."}
                 </div>
               </Section>
             )}
@@ -1103,6 +1183,7 @@ const VariationsSection = ({ n, f, set }: { n: number; f: FormState; set: SetFn 
           <input
             type="checkbox"
             checked={f.hasVariations}
+            disabled={f.autoOptions}
             onChange={(e) => {
               set("hasVariations", e.target.checked);
               if (e.target.checked && !f.variations.length) {
@@ -1118,7 +1199,7 @@ const VariationsSection = ({ n, f, set }: { n: number; f: FormState; set: SetFn 
         <>
           <div className="fld" style={{ maxWidth: 260 }}>
             <label>Options are called</label>
-            <input value={f.variationName} onChange={(e) => set("variationName", e.target.value)} placeholder="Colour, Size, Weight…" />
+            <input value={f.variationName} disabled={f.autoOptions} title={f.autoOptions ? "Set by the dropdown names in What's in the bundle" : undefined} onChange={(e) => set("variationName", e.target.value)} placeholder="Colour, Size, Weight…" />
           </div>
           <div className="cl-vars">
             <div className="cl-var head" style={{ gridTemplateColumns: cols }}>
@@ -1127,7 +1208,7 @@ const VariationsSection = ({ n, f, set }: { n: number; f: FormState; set: SetFn 
             </div>
             {f.variations.map((v, i) => (
               <div className="cl-var" key={i} style={{ gridTemplateColumns: cols }}>
-                <input value={v.value} onChange={(e) => upd(i, "value", e.target.value)} placeholder="e.g. Perch" />
+                <input value={v.value} disabled={f.autoOptions} onChange={(e) => upd(i, "value", e.target.value)} placeholder="e.g. Perch" />
                 <input value={v.sku} onChange={(e) => upd(i, "sku", e.target.value)} placeholder="Optional" />
                 <input inputMode="decimal" value={v.price} onChange={(e) => upd(i, "price", e.target.value)} placeholder="£" />
                 <input inputMode="decimal" value={v.webPrice} onChange={(e) => upd(i, "webPrice", e.target.value)} placeholder="£" />
@@ -1142,11 +1223,11 @@ const VariationsSection = ({ n, f, set }: { n: number; f: FormState; set: SetFn 
                   const pf = ebayProfit(v);
                   return <span className={`cl-vprofit${pf !== null && pf < 0 ? " neg" : ""}`}>{pf === null ? "-" : gbp(pf)}</span>;
                 })()}
-                <button className="btn ghost" aria-label="Remove option" onClick={() => set("variations", f.variations.filter((_, j) => j !== i))}>×</button>
+                <button className="btn ghost" aria-label="Remove option" disabled={f.autoOptions} title={f.autoOptions ? "Untick the choice in What's in the bundle instead" : undefined} onClick={() => set("variations", f.variations.filter((_, j) => j !== i))}>×</button>
               </div>
             ))}
           </div>
-          <button className="btn ghost" onClick={() => set("variations", [...f.variations, { ...emptyVar(), price: f.variations.at(-1)?.price ?? "", webPrice: f.variations.at(-1)?.webPrice ?? "" }])}>+ Add option</button>
+          {!f.autoOptions && <button className="btn ghost" onClick={() => set("variations", [...f.variations, { ...emptyVar(), price: f.variations.at(-1)?.price ?? "", webPrice: f.variations.at(-1)?.webPrice ?? "" }])}>+ Add option</button>}
           <div className="note" style={{ marginBottom: 0 }}>
             Leave SKU blank and SyncStock makes one. A photo picked here shows when a buyer picks that option{f.toEbay && web ? " on eBay and the website" : ""}.{web ? " Leave an option's weight blank to use the weight in the Website section." : ""}
           </div>

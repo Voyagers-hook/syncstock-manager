@@ -30,7 +30,7 @@ const MEDIA = "https://apim.ebay.com/commerce/media/v1_beta"; // eBay Media API 
 const SQ = "https://api.squarespace.com/1.0";
 
 interface BundleComponent { variantId: string; qty: number }
-interface Variation { value: string; sku: string; price: number; webPrice: number; stock: number; photo?: number; weightKg?: number; salePrice?: number; components?: BundleComponent[]; costPrice?: number }
+interface Variation { value: string; sku: string; price: number; webPrice: number; stock: number; photo?: number; weightKg?: number; salePrice?: number; components?: BundleComponent[]; costPrice?: number; specifics?: Record<string, string> }
 interface Listing {
   title: string;
   sku: string;
@@ -48,6 +48,9 @@ interface Listing {
   storeCategory2Id?: string;       // optional second Store category
   specifics: Record<string, string[]>;
   variationName?: string;         // e.g. "Colour"
+  // More than one dropdown (e.g. "Line size" and "Lure colour"). When set, each variation
+  // carries `specifics` with a value for every name, and `value` is those values joined " / ".
+  variationNames?: string[];
   variations?: Variation[];
   // Bundles: the items this listing is made of. A single item uses `components`; a listing
   // with options gives each option its own `components`. Stock is then worked out here from
@@ -436,13 +439,19 @@ function validate(L: Listing): string[] {
   if (L.toWebsite && !L.website?.storePageId) p.push("Pick which website shop page it goes on.");
   const vars = L.variations ?? [];
   if (vars.length) {
-    if (!L.variationName?.trim()) p.push("Name the variation, for example Colour or Size.");
+    if (!L.variationName?.trim() && !(L.variationNames ?? []).length) p.push("Name the variation, for example Colour or Size.");
+    if (vars.length > 250) p.push(`That's ${vars.length} options. eBay allows 250 at most, so untick some sizes or colours.`);
+    const names = varNames(L);
+    if (names.length > 5) p.push("eBay allows 5 dropdowns at most.");
+    if (new Set(names.map((n) => n.toLowerCase())).size !== names.length) p.push("Two dropdowns have the same name. Rename one, for example Line size and Lure colour.");
+    for (const n of names) if (n.length > 65) p.push(`The dropdown name "${n.slice(0, 30)}…" is too long for eBay (65 characters at most).`);
+    for (const v of vars) for (const val of Object.values(varSpecs(L, v))) if (!val.trim()) p.push(`An option is missing a value.`); else if (val.length > 65) p.push(`"${val.slice(0, 30)}…" is too long for an eBay option (65 characters at most).`);
     const vals = vars.map((v) => v.value.trim().toLowerCase());
     if (vals.some((v) => !v)) p.push("Every variation needs a name.");
     if (new Set(vals).size !== vals.length) p.push("Two variations have the same name.");
     if (vars.some((v) => !(v.price > 0))) p.push("Every variation needs a price.");
   } else if (!(L.price > 0)) p.push("Add a price.");
-  return p;
+  return [...new Set(p)];
 }
 
 // SyncStock needs every SKU to be unique (products.sku and variants.internal_sku), so check
@@ -501,18 +510,27 @@ function parseStoreCats(xml: string): { id: string; name: string; depth: number 
 function itemXml(L: Listing, d: any): string {
   const vars = L.variations ?? [];
   const specifics = Object.entries(L.specifics || {})
-    .filter(([n, v]) => n && v && v.length && !(vars.length && n === L.variationName))
+    .filter(([n, v]) => n && v && v.length && !(vars.length && varNames(L).includes(n)))
     .map(([n, vals]) => `<NameValueList><Name>${esc(n)}</Name>${vals.filter(Boolean).map((v) => `<Value>${esc(v)}</Value>`).join("")}</NameValueList>`)
     .join("");
   const pics = (L.photos || []).slice(0, 24).map((u) => `<PictureURL>${esc(u)}</PictureURL>`).join("");
   let variationsXml = "";
   if (vars.length) {
-    const vn = esc(L.variationName || "Option");
-    const withPhoto = vars.filter((v) => v.photo !== undefined && v.photo !== null && L.photos[v.photo]);
+    const names = varNames(L);
+    const first = names[0];
+    const valuesFor = (n: string) => [...new Set(vars.map((v) => varSpecs(L, v)[n]))];
+    const nvl = (spec: Record<string, string>) => names.map((n) => `<NameValueList><Name>${esc(n)}</Name><Value>${esc(spec[n])}</Value></NameValueList>`).join("");
+    // Option photos go on the first dropdown (eBay allows pictures for one of them only).
+    const photoFor = new Map<string, string>();
+    for (const v of vars) {
+      if (v.photo === undefined || v.photo === null || !L.photos[v.photo]) continue;
+      const k = varSpecs(L, v)[first];
+      if (!photoFor.has(k)) photoFor.set(k, L.photos[v.photo]);
+    }
     variationsXml = `<Variations>
-      <VariationSpecificsSet><NameValueList><Name>${vn}</Name>${vars.map((v) => `<Value>${esc(v.value)}</Value>`).join("")}</NameValueList></VariationSpecificsSet>
-      ${vars.map((v) => `<Variation>${v.sku?.trim() ? `<SKU>${esc(v.sku.trim())}</SKU>` : ""}<StartPrice>${money(v.price)}</StartPrice><Quantity>${Math.max(0, Math.floor(v.stock || 0))}</Quantity><VariationSpecifics><NameValueList><Name>${vn}</Name><Value>${esc(v.value)}</Value></NameValueList></VariationSpecifics></Variation>`).join("")}
-      ${withPhoto.length ? `<Pictures><VariationSpecificName>${vn}</VariationSpecificName>${withPhoto.map((v) => `<VariationSpecificPictureSet><VariationSpecificValue>${esc(v.value)}</VariationSpecificValue><PictureURL>${esc(L.photos[v.photo as number])}</PictureURL></VariationSpecificPictureSet>`).join("")}</Pictures>` : ""}
+      <VariationSpecificsSet>${names.map((n) => `<NameValueList><Name>${esc(n)}</Name>${valuesFor(n).map((x) => `<Value>${esc(x)}</Value>`).join("")}</NameValueList>`).join("")}</VariationSpecificsSet>
+      ${vars.map((v) => `<Variation>${v.sku?.trim() ? `<SKU>${esc(v.sku.trim())}</SKU>` : ""}<StartPrice>${money(v.price)}</StartPrice><Quantity>${Math.max(0, Math.floor(v.stock || 0))}</Quantity><VariationSpecifics>${nvl(varSpecs(L, v))}</VariationSpecifics></Variation>`).join("")}
+      ${photoFor.size ? `<Pictures><VariationSpecificName>${esc(first)}</VariationSpecificName>${[...photoFor].map(([val, url]) => `<VariationSpecificPictureSet><VariationSpecificValue>${esc(val)}</VariationSpecificValue><PictureURL>${esc(url)}</PictureURL></VariationSpecificPictureSet>`).join("")}</Pictures>` : ""}
     </Variations>`;
   }
   return `<Item>
@@ -593,7 +611,12 @@ function sqHeaders(key: string, extra: Record<string, string> = {}) {
 function fillSkus(L: Listing, ebayItemId: string | null) {
   const base = ebayItemId ?? `WEB${Date.now().toString(36).toUpperCase()}`;
   if (L.variations?.length) {
-    for (const v of L.variations) if (!v.sku?.trim()) v.sku = `${base}-${v.value}`.slice(0, 60);
+    const multi = (L.variationNames ?? []).length > 1;
+    L.variations.forEach((v, i) => {
+      if (v.sku?.trim()) return;
+      // Several dropdowns make long values ("0.06mm / Red"), so number those instead.
+      v.sku = multi ? `${base}-${i + 1}` : `${base}-${v.value}`.slice(0, 60);
+    });
   } else if (!L.sku?.trim()) L.sku = base;
 }
 
@@ -619,7 +642,7 @@ async function createSquarespace(supabase: any, L: Listing) {
         sku: v.sku,
         pricing: pricing(v.webPrice || v.price, v.salePrice),
         stock: { quantity: Math.max(0, Math.floor(v.stock || 0)), unlimited: false },
-        attributes: { [L.variationName || "Option"]: v.value },
+        attributes: varSpecs(L, v),
         ...measure(v.weightKg || w.weightKg),
       }))
     : [{
@@ -639,7 +662,7 @@ async function createSquarespace(supabase: any, L: Listing) {
   };
   const slug = slugify(w.urlSlug || "");
   if (slug) payload.urlSlug = slug;
-  if (vars.length) payload.variantAttributes = [L.variationName || "Option"];
+  if (vars.length) payload.variantAttributes = varNames(L);
   const r = await fetch(`${SQ}/commerce/products`, {
     method: "POST",
     headers: sqHeaders(key, { "Content-Type": "application/json" }),
@@ -740,7 +763,7 @@ async function saveToSyncStock(supabase: any, L: Listing, ebayItemId: string | n
     }
     if (sq) {
       const match = row.value
-        ? sq.variants.find((x: any) => Object.values(x.attrs).map(String).includes(row.value!)) ?? sq.variants.find((x: any) => x.sku && x.sku === row.sku)
+        ? sq.variants.find((x: any) => x.sku && x.sku === row.sku) ?? sq.variants.find((x: any) => Object.values(x.attrs).map(String).join(" / ") === row.value) ?? sq.variants.find((x: any) => Object.values(x.attrs).map(String).includes(row.value!))
         : sq.variants[0];
       if (match) {
         const { error: se } = await supabase.from("channel_listings").insert({ variant_id: v.id, channel: "squarespace", channel_sku: match.sku || row.sku, channel_price: row.webPrice, sq_base_price: row.webPrice, channel_product_id: sq.productId, channel_variant_id: match.id, last_synced_at: now });
@@ -816,4 +839,16 @@ function bundleSummary(L: Listing) {
   if (!L.isBundle) return null;
   const vars = L.variations ?? [];
   return vars.length ? vars.map((v) => ({ option: v.value, stock: v.stock, cost: v.costPrice ?? null })) : [{ option: null, stock: L.stock, cost: L.costPrice ?? null }];
+}
+
+// The dropdown names for a listing: several (variationNames) or the single variationName.
+function varNames(L: Listing): string[] {
+  const many = (L.variationNames ?? []).map((n) => n.trim()).filter(Boolean);
+  return many.length ? many : [L.variationName || "Option"];
+}
+// A variation's value for each dropdown name.
+function varSpecs(L: Listing, v: Variation): Record<string, string> {
+  const names = varNames(L);
+  if (v.specifics && (L.variationNames ?? []).length) return Object.fromEntries(names.map((n) => [n, String(v.specifics![n] ?? "")]));
+  return { [names[0]]: v.value };
 }
