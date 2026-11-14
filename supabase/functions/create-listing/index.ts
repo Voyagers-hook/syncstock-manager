@@ -289,6 +289,16 @@ Deno.serve(async (req) => {
         if (!r.success || !r.itemId) return json({ error: "eBay didn't accept the listing: " + (r.errors.join(" ") || "unknown error"), ebay: r }, 400);
         ebayItemId = r.itemId;
         result.ebay = { itemId: ebayItemId, url: `https://www.ebay.co.uk/itm/${ebayItemId}`, warnings: r.warnings, fees: r.fees };
+        // Listings made here already use the current template, so record them as converted.
+        // That keeps them out of the Listing Templates "to update" list. old_description is the
+        // same HTML, so a restore from that page leaves the listing as it is.
+        const { error: tErr } = await supabase.from("listing_description_backups").insert({
+          item_id: ebayItemId,
+          title: L.title,
+          old_description: L.descriptionHtml,
+          new_description: L.descriptionHtml,
+        });
+        if (tErr) result.templateNote = "Listing created, but it wasn't marked as converted: " + tErr.message;
       }
 
       // Squarespace needs a SKU on every option, and SyncStock needs them unique. Fill blanks
