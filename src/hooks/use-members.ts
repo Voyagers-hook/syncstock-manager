@@ -11,6 +11,7 @@ export interface Member {
   join_date: string | null;
   points_balance: number;
   lifetime_spend: number;
+  spend_12m?: number;
   spend_tier: string | null;
   discount_code: string | null;
   discount_used: boolean;
@@ -79,6 +80,23 @@ export function useAdjustPoints() {
       qc.invalidateQueries({ queryKey: ["members"] });
       qc.invalidateQueries({ queryKey: ["member-ledger", v.member_id] });
     },
+  });
+}
+
+export interface ExpiringMember {
+  member_id: string;
+  name: string | null;
+  email: string | null;
+  tier: string;
+  points_balance: number;
+  days_left: number;
+}
+
+export function useExpiringSoon(days = 30) {
+  return useQuery({
+    queryKey: ["points-expiring", days],
+    queryFn: () => call<{ expiring: ExpiringMember[] }>({ action: "expiring_soon", days }).then((r) => r.expiring),
+    staleTime: 60_000,
   });
 }
 

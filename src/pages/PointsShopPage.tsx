@@ -105,7 +105,7 @@ function ItemRow({ item }: { item: CatalogItem }) {
       <td className="num" style={{ color: item.stock > 0 ? undefined : "var(--over)" }}>{item.stock}</td>
       <td className="num">
         <input type="number" min={1} step={1} value={pts} onChange={(e) => setPts(e.target.value)}
-          style={{ width: 90, padding: "6px 8px", borderRadius: 8, border: "1px solid var(--line,#334155)", background: "var(--card2,#0f172a)", color: "var(--fg,#f1f5f9)", fontSize: 14, textAlign: "right" }} />
+          style={{ width: 90, padding: "6px 8px", borderRadius: 8, border: "1px solid var(--line,#eceff4)", background: "#fff", color: "var(--ink,#111827)", fontSize: 14, textAlign: "right" }} />
       </td>
       <td>
         <input type="checkbox" checked={active} onChange={(e) => save(e.target.checked)} aria-label="Active in shop" />

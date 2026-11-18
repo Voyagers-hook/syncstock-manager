@@ -19,11 +19,21 @@ function spendBadge(t: string | null) {
   return <span className="badge" style={{ color: c, textTransform: "capitalize" }}>{t ?? "bronze"}</span>;
 }
 
+type TierFilter = "all" | "cast" | "little_voyagers";
+
 const MembersPage = () => {
   const [search, setSearch] = useState("");
-  const { data: members = [], isLoading } = useMembers(search);
+  const { data: allMembers = [], isLoading } = useMembers(search);
+  const [tierFilter, setTierFilter] = useState<TierFilter>("all");
+  const members = tierFilter === "all" ? allMembers : allMembers.filter((m) => m.tier === tierFilter);
   const [openId, setOpenId] = useState<string | null>(null);
   const open = members.find((m) => m.id === openId) ?? null;
+
+  const counts = {
+    all: allMembers.length,
+    cast: allMembers.filter((m) => m.tier === "cast").length,
+    little_voyagers: allMembers.filter((m) => m.tier === "little_voyagers").length,
+  };
 
   return (
     <ConceptLayout
@@ -34,10 +44,16 @@ const MembersPage = () => {
     >
       <div className="thead-wrap">
         <div className="cap">
-          <h3>Members</h3>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <h3 style={{ margin: 0 }}>Members</h3>
+            <div className="seg">
+              <button className={tierFilter === "all" ? "on" : ""} onClick={() => setTierFilter("all")}>All ({counts.all})</button>
+              <button className={tierFilter === "cast" ? "on" : ""} onClick={() => setTierFilter("cast")}>Cast ({counts.cast})</button>
+              <button className={tierFilter === "little_voyagers" ? "on" : ""} onClick={() => setTierFilter("little_voyagers")}>Little Voyagers ({counts.little_voyagers})</button>
+            </div>
+          </div>
           <div className="legend" style={{ display: "flex", gap: 14, alignItems: "center" }}>
-            <span>{members.length} shown</span>
-            <span style={{ color: "var(--muted)" }}>1 point = 1p · tiers: Bronze 5 / Silver 6.25 / Gold 7.5 per £1</span>
+            <span style={{ color: "var(--muted)" }}>1 point = 1p · band by last-12-month spend: Bronze 5 / Silver 6.25 / Gold 7.5 per £1</span>
           </div>
         </div>
         <table>
@@ -46,7 +62,7 @@ const MembersPage = () => {
               <th>Member</th>
               <th>Membership #</th>
               <th>Tier</th>
-              <th className="num">Lifetime spend</th>
+              <th className="num">Spend (12 mo)</th>
               <th>Band</th>
               <th className="num">Points</th>
               <th>NEWMEM10</th>
@@ -66,7 +82,7 @@ const MembersPage = () => {
                   </td>
                   <td style={{ fontVariantNumeric: "tabular-nums" }}>{m.membership_number ?? "—"}</td>
                   <td>{tierLabel[m.tier] ?? m.tier}</td>
-                  <td className="num">{money(m.lifetime_spend)}</td>
+                  <td className="num">{money(m.spend_12m ?? m.lifetime_spend)}</td>
                   <td>{spendBadge(m.spend_tier)}</td>
                   <td className="num"><b>{m.points_balance.toLocaleString()}</b></td>
                   <td>{m.discount_used ? <span style={{ color: "var(--over)" }}>Used</span> : <span style={{ color: "var(--ok,#16a34a)" }}>Available</span>}</td>
@@ -113,9 +129,9 @@ function MemberDrawer({ member, onClose }: { member: Member; onClose: () => void
 
         <div style={{ display: "flex", gap: 10, padding: "6px 2px 12px", flexWrap: "wrap" }}>
           <Stat label="Points balance" value={member.points_balance.toLocaleString()} />
+          <Stat label="Spend (last 12 mo)" value={money(member.spend_12m ?? member.lifetime_spend)} />
+          <Stat label="Band (12 mo)" value={(member.spend_tier ?? "bronze")} cap />
           <Stat label="Lifetime spend" value={money(member.lifetime_spend)} />
-          <Stat label="Band" value={(member.spend_tier ?? "bronze")} cap />
-          <Stat label="Joined" value={fmtDate(member.join_date)} />
         </div>
         {member.email_aliases && member.email_aliases.length > 0 && (
           <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 8 }}>
@@ -123,7 +139,7 @@ function MemberDrawer({ member, onClose }: { member: Member; onClose: () => void
           </div>
         )}
 
-        <div style={{ border: "1px solid var(--line,#2a3444)", borderRadius: 10, padding: 12, marginBottom: 14 }}>
+        <div style={{ border: "1px solid var(--line,#eceff4)", borderRadius: 10, padding: 12, marginBottom: 14 }}>
           <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Manual points adjustment</div>
           <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
             <div className="seg">
@@ -174,14 +190,14 @@ function MemberDrawer({ member, onClose }: { member: Member; onClose: () => void
 
 function Stat({ label, value, cap }: { label: string; value: string; cap?: boolean }) {
   return (
-    <div style={{ flex: "1 1 120px", background: "var(--card2,#121a26)", border: "1px solid var(--line,#2a3444)", borderRadius: 10, padding: "10px 12px" }}>
+    <div style={{ flex: "1 1 120px", background: "var(--bg,#f6f8fb)", border: "1px solid var(--line,#eceff4)", borderRadius: 10, padding: "10px 12px" }}>
       <div style={{ fontSize: 11, color: "var(--muted)" }}>{label}</div>
-      <div style={{ fontSize: 18, fontWeight: 700, textTransform: cap ? "capitalize" : "none" }}>{value}</div>
+      <div style={{ fontSize: 18, fontWeight: 700, color: "var(--ink,#111827)", textTransform: cap ? "capitalize" : "none" }}>{value}</div>
     </div>
   );
 }
 function inp(w: number): React.CSSProperties {
-  return { width: w, padding: "8px 10px", borderRadius: 8, border: "1px solid var(--line,#334155)", background: "var(--card2,#0f172a)", color: "var(--fg,#f1f5f9)", fontSize: 14 };
+  return { width: w, padding: "8px 10px", borderRadius: 8, border: "1px solid var(--line,#eceff4)", background: "#fff", color: "var(--ink,#111827)", fontSize: 14 };
 }
 
 export default MembersPage;
