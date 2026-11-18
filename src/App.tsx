@@ -20,6 +20,8 @@ import CreateListingPage from "./pages/CreateListingPage.tsx";
 import TitleCleanupPage from "./pages/TitleCleanupPage.tsx";
 import SellSimilarPage from "./pages/SellSimilarPage.tsx";
 import PostagePage from "./pages/PostagePage.tsx";
+import MembersPage from "./pages/MembersPage.tsx";
+import PointsShopPage from "./pages/PointsShopPage.tsx";
 import NotFound from "./pages/NotFound.tsx";
 
 const CORRECT_PASSWORD = "VoyagersHook25!";
@@ -142,6 +144,8 @@ const App = () => {
             <Route path="/title-cleanup" element={<TitleCleanupPage />} />
             <Route path="/sell-similar" element={<SellSimilarPage />} />
             <Route path="/postage" element={<PostagePage />} />
+            <Route path="/members" element={<MembersPage />} />
+            <Route path="/points-shop" element={<PointsShopPage />} />
             <Route path="/create-listing" element={<CreateListingPage key="listing" />} />
             <Route path="/create-bundle" element={<CreateListingPage key="bundle" bundle />} />
             <Route path="/settings" element={<SettingsPage />} />
