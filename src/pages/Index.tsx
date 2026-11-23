@@ -6,7 +6,7 @@ import { useProducts } from "@/hooks/use-products";
 import { useOrders } from "@/hooks/use-orders";
 import { useRefunds } from "@/hooks/use-refunds";
 import { useCompetitorMap } from "@/hooks/use-competitor-all";
-import { useExpiringSoon } from "@/hooks/use-members";
+import { useExpiringSoon, useBirthdaysSoon } from "@/hooks/use-members";
 import type { ProductWithDetails } from "@/lib/types";
 import { FEE_RATES } from "@/hooks/use-sales";
 import InventoryTable, { StockTarget, CompTarget } from "@/components/inventory/InventoryTable";
@@ -47,6 +47,7 @@ const Index = () => {
   const { data: compMap = {} } = useCompetitorMap();
   const { data: top = [] } = useTopSellers(6, "quantity", { from: since });
   const { data: expiring = [] } = useExpiringSoon(30);
+  const { data: birthdays = [] } = useBirthdaysSoon(14);
 
   // Cost of goods per product (avg of its variant costs, else product cost).
   const prodCost = useMemo(() => {
@@ -205,6 +206,34 @@ const Index = () => {
           {expiring.length > 8 && (
             <div className="rank"><div className="nm" style={{ color: "var(--muted)" }}>+ {expiring.length - 8} more…</div></div>
           )}
+        </div>
+      )}
+
+      {birthdays.length > 0 && (
+        <div className="panel" style={{ borderColor: "var(--brand, #0397b2)" }}>
+          <h3>
+            <span className="dot" style={{ background: "var(--brand, #0397b2)", marginRight: 8 }} />
+            Birthdays coming up
+            <span className="per">{birthdays.length} member{birthdays.length === 1 ? "" : "s"} within 2 weeks</span>
+            <span className="link" style={{ marginLeft: "auto" }} onClick={() => nav("/members")}>Open members →</span>
+          </h3>
+          {birthdays.map((b) => (
+            <div className="rank" key={b.member_id}>
+              <div className="nm">
+                {b.child_name || b.name || b.email}
+                {b.child_name && b.name && b.child_name !== b.name ? <small style={{ color: "var(--muted)" }}> · {b.name}</small> : null}
+                {b.tier === "little_voyagers" ? <small style={{ color: "var(--muted)" }}> · Little Voyagers</small> : null}
+                {b.photo_consent === false ? <small style={{ color: "var(--muted)" }}> · no photos</small> : null}
+              </div>
+              <div className="q">turns {b.turning}</div>
+              <div className="q" style={{ minWidth: 70, textAlign: "right" }}>
+                {new Date(b.next_birthday + "T12:00:00").toLocaleDateString("en-GB", { day: "numeric", month: "short" })}
+              </div>
+              <div className="q" style={{ color: b.days_left <= 3 ? "var(--out)" : "var(--brand, #0397b2)", minWidth: 90, textAlign: "right" }}>
+                {b.days_left === 0 ? "today" : b.days_left === 1 ? "tomorrow" : `${b.days_left}d to go`}
+              </div>
+            </div>
+          ))}
         </div>
       )}
 

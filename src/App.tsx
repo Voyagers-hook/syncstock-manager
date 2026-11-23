@@ -1,4 +1,6 @@
 import { useState, useEffect } from "react";
+import type { Session } from "@supabase/supabase-js";
+import { supabase } from "@/integrations/supabase/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter, Route, Routes } from "react-router-dom";
 import { Toaster as Sonner } from "@/components/ui/sonner";
@@ -24,91 +26,46 @@ import MembersPage from "./pages/MembersPage.tsx";
 import PointsShopPage from "./pages/PointsShopPage.tsx";
 import NotFound from "./pages/NotFound.tsx";
 
-const CORRECT_PASSWORD = "VoyagersHook25!";
-const STORAGE_KEY = "vh_auth";
-
 const queryClient = new QueryClient();
 
-const LoginScreen = ({ onLogin }: { onLogin: () => void }) => {
+// Sign-in uses Supabase Auth (email + password). The browser offers to save the password,
+// so Face ID / Touch ID can fill it in next time. The session is remembered on this device
+// and refreshed automatically, so you only sign in again if you sign out.
+const LoginScreen = () => {
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (password === CORRECT_PASSWORD) {
-      localStorage.setItem(STORAGE_KEY, "1");
-      onLogin();
-    } else {
-      setError(true);
-      setPassword("");
-    }
+    setBusy(true); setError(null);
+    const { error } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+    setBusy(false);
+    if (error) { setError("That email and password don't match. Try again."); setPassword(""); }
+  };
+
+  const field: React.CSSProperties = {
+    width: "100%", padding: "12px 14px", borderRadius: "8px", border: "1px solid #334155",
+    background: "#0f172a", color: "#f1f5f9", fontSize: "15px", outline: "none", boxSizing: "border-box", marginBottom: "10px",
   };
 
   return (
-    <div style={{
-      minHeight: "100vh",
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      background: "#0f172a",
-    }}>
-      <div style={{
-        background: "#1e293b",
-        borderRadius: "12px",
-        padding: "40px",
-        width: "100%",
-        maxWidth: "360px",
-        boxShadow: "0 20px 60px rgba(0,0,0,0.5)",
-      }}>
-        <div style={{ textAlign: "center", marginBottom: "32px" }}>
-          <h1 style={{ color: "#f1f5f9", fontSize: "22px", fontWeight: 700, margin: 0 }}>
-            Voyagers Hook
-          </h1>
-          <p style={{ color: "#64748b", fontSize: "14px", marginTop: "6px" }}>
-            Stock Manager
-          </p>
+    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "#0f172a" }}>
+      <div style={{ background: "#1e293b", borderRadius: "12px", padding: "40px", width: "100%", maxWidth: "380px", boxShadow: "0 20px 60px rgba(0,0,0,0.5)" }}>
+        <div style={{ textAlign: "center", marginBottom: "28px" }}>
+          <h1 style={{ color: "#f1f5f9", fontSize: "22px", fontWeight: 700, margin: 0 }}>Voyagers Hook</h1>
+          <p style={{ color: "#64748b", fontSize: "14px", marginTop: "6px" }}>Stock Manager</p>
         </div>
-        <form onSubmit={handleSubmit}>
-          <input
-            type="password"
-            value={password}
-            onChange={e => { setPassword(e.target.value); setError(false); }}
-            placeholder="Enter password"
-            autoFocus
-            style={{
-              width: "100%",
-              padding: "12px 14px",
-              borderRadius: "8px",
-              border: error ? "1px solid #ef4444" : "1px solid #334155",
-              background: "#0f172a",
-              color: "#f1f5f9",
-              fontSize: "15px",
-              outline: "none",
-              boxSizing: "border-box",
-              marginBottom: "8px",
-            }}
-          />
-          {error && (
-            <p style={{ color: "#ef4444", fontSize: "13px", margin: "0 0 12px" }}>
-              Incorrect password. Try again.
-            </p>
-          )}
-          <button
-            type="submit"
-            style={{
-              width: "100%",
-              padding: "12px",
-              borderRadius: "8px",
-              border: "none",
-              background: "#3b82f6",
-              color: "#fff",
-              fontSize: "15px",
-              fontWeight: 600,
-              cursor: "pointer",
-              marginTop: error ? "0" : "8px",
-            }}
-          >
-            Login
+        <form onSubmit={handleSubmit} autoComplete="on">
+          <input type="email" name="email" autoComplete="username" value={email} onChange={(e) => { setEmail(e.target.value); setError(null); }}
+            placeholder="Email" autoFocus required style={field} />
+          <input type="password" name="password" autoComplete="current-password" value={password} onChange={(e) => { setPassword(e.target.value); setError(null); }}
+            placeholder="Password" required style={{ ...field, border: error ? "1px solid #ef4444" : field.border }} />
+          {error && <p style={{ color: "#ef4444", fontSize: "13px", margin: "0 0 12px" }}>{error}</p>}
+          <button type="submit" disabled={busy} style={{ width: "100%", padding: "12px", borderRadius: "8px", border: "none", background: "#3b82f6",
+            color: "#fff", fontSize: "15px", fontWeight: 600, cursor: "pointer", marginTop: "4px", opacity: busy ? 0.7 : 1 }}>
+            {busy ? "Signing in..." : "Sign in"}
           </button>
         </form>
       </div>
@@ -117,11 +74,20 @@ const LoginScreen = ({ onLogin }: { onLogin: () => void }) => {
 };
 
 const App = () => {
-  const [authed, setAuthed] = useState(() => localStorage.getItem(STORAGE_KEY) === "1");
+  const [session, setSession] = useState<Session | null | undefined>(undefined);
 
-  if (!authed) {
-    return <LoginScreen onLogin={() => setAuthed(true)} />;
-  }
+  useEffect(() => {
+    try { localStorage.removeItem("vh_auth"); } catch { /* old password flag, no longer used */ }
+    supabase.auth.getSession().then(({ data }) => setSession(data.session));
+    const { data: sub } = supabase.auth.onAuthStateChange((_e, s) => {
+      setSession(s);
+      if (!s) queryClient.clear();
+    });
+    return () => sub.subscription.unsubscribe();
+  }, []);
+
+  if (session === undefined) return <div style={{ minHeight: "100vh", background: "#0f172a" }} />;
+  if (!session) return <LoginScreen />;
 
   return (
     <QueryClientProvider client={queryClient}>

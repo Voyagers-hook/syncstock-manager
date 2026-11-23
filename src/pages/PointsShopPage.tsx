@@ -58,9 +58,10 @@ const PointsShopPage = () => {
 
       <div className="note">
         Items here share stock with your eBay & Squarespace listings, so a points redemption reduces
-        the same stock a sale would. Point value defaults to the item's price in pence (£{(5).toFixed(2)}
-        = 500 pts); change it to whatever you want. Untick <b>Active</b> to hide an item from the shop
-        without losing its settings, or use <b>Remove</b> to take it out completely.
+        the same stock a sale would. Point value defaults to the item's retail price in pence (£5.00 =
+        500 pts), and <b>can never be set below the item's cost</b> (the "min" shown) so a redemption
+        always at least breaks even. Untick <b>Active</b> to hide an item without losing its settings,
+        or use <b>Remove</b> to take it out completely.
       </div>
     </ConceptLayout>
   );
@@ -69,17 +70,20 @@ const PointsShopPage = () => {
 function ItemRow({ item }: { item: CatalogItem }) {
   const set = useShopSet();
   const remove = useShopRemove();
-  const [pts, setPts] = useState<string>(item.points_value != null ? String(item.points_value) : String(suggested(item.price)));
+  const minPts = item.cost ? Math.ceil(Number(item.cost) * 100) : 0; // never below cost (1pt = 1p)
+  const defPts = item.points_value != null ? item.points_value : Math.max(suggested(item.price), minPts);
+  const [pts, setPts] = useState<string>(String(defPts));
   const [active, setActive] = useState<boolean>(item.active);
 
   useEffect(() => {
-    setPts(item.points_value != null ? String(item.points_value) : String(suggested(item.price)));
+    setPts(String(item.points_value != null ? item.points_value : Math.max(suggested(item.price), minPts)));
     setActive(item.active);
-  }, [item.points_value, item.active, item.price]);
+  }, [item.points_value, item.active, item.price, item.cost]);
 
   const save = async (nextActive?: boolean) => {
     const n = Math.trunc(Number(pts));
     if (!Number.isFinite(n) || n <= 0) { toast.error("Enter a point value above 0."); return; }
+    if (minPts && n < minPts) { toast.error(`Below cost — minimum ${minPts} points (£${(minPts / 100).toFixed(2)}).`); return; }
     const a = nextActive ?? active;
     try {
       await set.mutateAsync({ variant_id: item.variant_id, points_value: n, active: a });
@@ -101,11 +105,14 @@ function ItemRow({ item }: { item: CatalogItem }) {
           {item.sku ?? "no sku"}{item.flagged ? " · in shop" : ""}
         </div>
       </td>
-      <td className="num">{money(item.price)}</td>
+      <td className="num">{money(item.price)}<br /><span style={{ fontSize: 11, color: "var(--muted)" }}>cost {money(item.cost)}</span></td>
       <td className="num" style={{ color: item.stock > 0 ? undefined : "var(--over)" }}>{item.stock}</td>
       <td className="num">
-        <input type="number" min={1} step={1} value={pts} onChange={(e) => setPts(e.target.value)}
-          style={{ width: 90, padding: "6px 8px", borderRadius: 8, border: "1px solid var(--line,#eceff4)", background: "#fff", color: "var(--ink,#111827)", fontSize: 14, textAlign: "right" }} />
+        <input type="number" min={minPts || 1} step={1} value={pts} onChange={(e) => setPts(e.target.value)}
+          style={{ width: 90, padding: "6px 8px", borderRadius: 8, border: `1px solid ${minPts && Number(pts) < minPts ? "var(--over)" : "var(--line,#eceff4)"}`, background: "#fff", color: "var(--ink,#111827)", fontSize: 14, textAlign: "right" }} />
+        {minPts > 0 && (
+          <div style={{ fontSize: 11, marginTop: 4, color: Number(pts) < minPts ? "var(--over)" : "var(--muted)" }}>min {minPts}</div>
+        )}
       </td>
       <td>
         <input type="checkbox" checked={active} onChange={(e) => save(e.target.checked)} aria-label="Active in shop" />

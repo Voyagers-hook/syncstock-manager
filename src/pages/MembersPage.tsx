@@ -1,6 +1,6 @@
 import { useState } from "react";
 import ConceptLayout from "@/components/ConceptLayout";
-import { useMembers, useMemberLedger, useAdjustPoints, Member } from "@/hooks/use-members";
+import { useMembers, useMemberLedger, useAdjustPoints, useMemberProfile, Member } from "@/hooks/use-members";
 import { toast } from "sonner";
 
 function money(n: number | null | undefined) {
@@ -13,7 +13,13 @@ function fmtDate(iso: string | null) {
 function fmtDateTime(iso: string) {
   return new Date(iso).toLocaleString("en-GB", { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit" });
 }
-const tierLabel: Record<string, string> = { cast: "Cast", little_voyagers: "Little Voyagers" };
+const tierLabel: Record<string, string> = { cast: "Cast", little_voyagers: "Little Voyagers", strike: "Strike", specimen: "Specimen" };
+function ageOn(dob: string) {
+  const d = new Date(dob + "T12:00:00"), now = new Date();
+  let a = now.getFullYear() - d.getFullYear();
+  if (now.getMonth() < d.getMonth() || (now.getMonth() === d.getMonth() && now.getDate() < d.getDate())) a--;
+  return a;
+}
 function spendBadge(t: string | null) {
   const c = t === "gold" ? "#d97706" : t === "silver" ? "#64748b" : "#b45309";
   return <span className="badge" style={{ color: c, textTransform: "capitalize" }}>{t ?? "bronze"}</span>;
@@ -100,6 +106,7 @@ const MembersPage = () => {
 
 function MemberDrawer({ member, onClose }: { member: Member; onClose: () => void }) {
   const { data: ledger = [], isLoading } = useMemberLedger(member.id);
+  const { data: profile } = useMemberProfile(member.id);
   const adjust = useAdjustPoints();
   const [amount, setAmount] = useState("");
   const [note, setNote] = useState("");
@@ -136,6 +143,20 @@ function MemberDrawer({ member, onClose }: { member: Member; onClose: () => void
         {member.email_aliases && member.email_aliases.length > 0 && (
           <div style={{ fontSize: 12, color: "var(--muted)", marginBottom: 8 }}>
             Also known by: {member.email_aliases.join(", ")}
+          </div>
+        )}
+
+        {profile && Object.values(profile).some((v) => v !== null && v !== "") && (
+          <div style={{ border: "1px solid var(--line,#eceff4)", borderRadius: 10, padding: 12, marginBottom: 14 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Sign-up details</div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: "6px 16px", fontSize: 13 }}>
+              {profile.child_name && <Detail label="Child's name" value={profile.child_name} />}
+              {profile.parent_name && <Detail label="Parent's name" value={profile.parent_name} />}
+              {profile.date_of_birth && <Detail label="Date of birth" value={`${fmtDate(profile.date_of_birth)} (age ${ageOn(profile.date_of_birth)})`} />}
+              {profile.fishing_style && <Detail label="Fishing style" value={profile.fishing_style} />}
+              {profile.location && <Detail label="Location" value={profile.location} />}
+              {profile.photo_consent !== null && <Detail label="Photo consent" value={profile.photo_consent ? "Yes" : "No"} />}
+            </div>
           </div>
         )}
 
@@ -184,6 +205,15 @@ function MemberDrawer({ member, onClose }: { member: Member; onClose: () => void
           </table>
         </div>
       </div>
+    </div>
+  );
+}
+
+function Detail({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <div style={{ fontSize: 11, color: "var(--muted)" }}>{label}</div>
+      <div style={{ color: "var(--ink,#111827)" }}>{value}</div>
     </div>
   );
 }

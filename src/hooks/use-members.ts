@@ -35,6 +35,7 @@ export interface CatalogItem {
   options: string | null;
   sku: string | null;
   price: number | null;
+  cost: number | null;
   stock: number;
   points_value: number | null;
   active: boolean;
@@ -96,6 +97,46 @@ export function useExpiringSoon(days = 30) {
   return useQuery({
     queryKey: ["points-expiring", days],
     queryFn: () => call<{ expiring: ExpiringMember[] }>({ action: "expiring_soon", days }).then((r) => r.expiring),
+    staleTime: 60_000,
+  });
+}
+
+export interface MemberProfile {
+  parent_name: string | null;
+  child_name: string | null;
+  date_of_birth: string | null;
+  fishing_style: string | null;
+  photo_consent: boolean | null;
+  location: string | null;
+}
+
+// Sign-up form details (copied from MailerLite every hour).
+export function useMemberProfile(memberId: string | null) {
+  return useQuery({
+    queryKey: ["member-profile", memberId],
+    queryFn: () => call<{ profile: MemberProfile | null }>({ action: "profile", member_id: memberId }).then((r) => r.profile),
+    enabled: !!memberId,
+  });
+}
+
+export interface BirthdayMember {
+  member_id: string;
+  name: string | null;
+  child_name: string | null;
+  email: string | null;
+  tier: string;
+  date_of_birth: string;
+  next_birthday: string;
+  days_left: number;
+  turning: number;
+  photo_consent: boolean | null;
+}
+
+// Birthdays coming up in the next `days` days (UK dates), soonest first.
+export function useBirthdaysSoon(days = 14) {
+  return useQuery({
+    queryKey: ["birthdays-soon", days],
+    queryFn: () => call<{ birthdays: BirthdayMember[] }>({ action: "birthdays_soon", days }).then((r) => r.birthdays),
     staleTime: 60_000,
   });
 }

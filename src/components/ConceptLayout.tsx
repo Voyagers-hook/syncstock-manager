@@ -1,5 +1,6 @@
 import { ReactNode } from "react";
 import DashboardSidebar from "@/components/DashboardSidebar";
+import AccountMenu from "@/components/AccountMenu";
 
 export type Range = "7" | "30" | "90" | "yr";
 export const RANGE_LABEL: Record<Range, string> = {
@@ -81,6 +82,7 @@ const ConceptLayout = ({
               />
             </div>
           )}
+          <AccountMenu />
         </div>
         <div className="content">{children}</div>
       </div>
