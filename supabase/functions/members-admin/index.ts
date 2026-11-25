@@ -15,6 +15,15 @@ Deno.serve(async (req) => {
     const body = await req.json().catch(() => ({}));
     const action = body.action as string;
 
+    // Everything except member_card (read by the website) needs the signed-in SyncStock admin.
+    if (action !== "member_card") {
+      const token = (req.headers.get("authorization") || "").replace(/^Bearer\s+/i, "");
+      const { data: u } = token ? await supabase.auth.getUser(token) : { data: { user: null } };
+      const email = (u?.user?.email || "").toLowerCase();
+      const { data: adm } = email ? await supabase.from("app_admins").select("email").eq("email", email).maybeSingle() : { data: null };
+      if (!adm) return json({ error: "Please sign in to SyncStock again." }, 401);
+    }
+
     if (action === "members") {
       const q = (body.search || "").trim();
       let query = supabase.from("members")
